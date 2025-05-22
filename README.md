@@ -44,6 +44,32 @@ Example output:
 {"ticket":"ISSUE-123","summary":"Fix the login button in Safari"}
 ```
 
+### Current Sprint Tickets
+View your tickets in the current active sprint:
+
+```bash
+# View all your tickets in the current sprint
+jit --my-tickets
+
+# Limit the number of tickets shown
+jit --my-tickets --limit 5
+```
+
+Example output:
+```
+Current Sprint: Development Sprint 27
+
++-----------+----------------------------------+-------------------+------------+
+| Key       | Summary                          | Status            | Updated    |
++-----------+----------------------------------+-------------------+------------+
+| PROJ-123  | Implement new login page         | In Review         | 2025-05-15 |
++-----------+----------------------------------+-------------------+------------+
+| PROJ-124  | Fix responsiveness on dashboard  | In Progress       | 2025-05-14 |
++-----------+----------------------------------+-------------------+------------+
+| PROJ-125  | Update API documentation         | Done              | 2025-05-12 |
++-----------+----------------------------------+-------------------+------------+
+```
+
 
 ## Setup
 
