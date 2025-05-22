@@ -7,7 +7,11 @@ A simple Rust CLI tool to extract ticket ID and summary information from JIRA is
 
 ### Standard output
 ```bash
+# Using a ticket ID
 jit ISSUE-123
+
+# Using a JIRA URL
+jit https://your-company.atlassian.net/browse/ISSUE-123
 ```
 
 Example output:
@@ -18,7 +22,11 @@ Summary:  Fix the login button in Safari
 
 ### JSON output
 ```bash
+# Using a ticket ID
 jit --json ISSUE-123
+
+# Using a JIRA URL
+jit --json https://your-company.atlassian.net/browse/ISSUE-123
 ```
 
 Example output:
