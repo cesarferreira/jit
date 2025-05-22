@@ -71,6 +71,25 @@ Current Sprint: Development Sprint 27
 ```
 
 
+## Configuration
+
+The tool looks for JIRA credentials in the following locations (in order):
+
+1. Custom environment file specified with `--env-file` option
+2. `.env` file in the current directory
+3. `.env` file in `~/.config/jit/` directory
+4. Environment variables set in your shell
+
+When running for the first time, create a `.env` file in your home directory at `~/.config/jit/.env` with:
+
+```
+JIRA_BASE_URL=https://your-company.atlassian.net
+JIRA_API_TOKEN=your_api_token_here
+JIRA_USER_EMAIL=your_email@example.com
+```
+
+With this configuration, you can run the tool from any directory on your system.
+
 ## Setup
 
 1. Clone the repository

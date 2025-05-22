@@ -6,6 +6,7 @@ use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::Deserialize;
 use serde_json::json;
 use std::env;
+use std::path::PathBuf;
 use dotenv::dotenv;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use regex::Regex;
@@ -33,6 +34,10 @@ struct Cli {
     /// Maximum number of tickets to retrieve (default: 10)
     #[clap(long, default_value = "10")]
     limit: u32,
+    
+    /// Path to a custom .env file
+    #[clap(long)]
+    env_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -69,18 +74,18 @@ struct JiraSearchResponse {
 }
 
 fn main() -> Result<()> {
-    // Load environment variables from .env file
-    dotenv().ok();
-    
     let args = Cli::parse();
+    
+    // Load environment variables from multiple locations
+    load_environment_variables(&args);
     
     // Get Jira API credentials from environment
     let jira_base_url = env::var("JIRA_BASE_URL")
-        .context("JIRA_BASE_URL not set in .env file")?;
+        .context("JIRA_BASE_URL not set. Set it in a .env file or as an environment variable")?;
     let jira_api_token = env::var("JIRA_API_TOKEN")
-        .context("JIRA_API_TOKEN not set in .env file")?;
+        .context("JIRA_API_TOKEN not set. Set it in a .env file or as an environment variable")?;
     let jira_user_email = env::var("JIRA_USER_EMAIL")
-        .context("JIRA_USER_EMAIL not set in .env file")?;
+        .context("JIRA_USER_EMAIL not set. Set it in a .env file or as an environment variable")?;
     
     // Create HTTP client for JIRA API
     let client = create_jira_client(&jira_user_email, &jira_api_token)?;
@@ -113,6 +118,51 @@ fn main() -> Result<()> {
     }
     
     Ok(())
+}
+
+/// Attempts to load environment variables from multiple locations in order:
+/// 1. Custom env file passed as an argument
+/// 2. Current directory .env
+/// 3. User's home directory ~/.config/jit/.env
+fn load_environment_variables(args: &Cli) {
+    // First try user-specified env file if provided
+    if let Some(env_path) = &args.env_file {
+        if env_path.exists() {
+            dotenv::from_path(env_path).ok();
+            return;
+        } else {
+            eprintln!("Warning: Specified .env file not found at: {:?}", env_path);
+        }
+    }
+    
+    // Try the current directory
+    dotenv().ok();
+    
+    // If the vars aren't set yet, try in the home directory
+    if env::var("JIRA_BASE_URL").is_err() || 
+       env::var("JIRA_API_TOKEN").is_err() || 
+       env::var("JIRA_USER_EMAIL").is_err() {
+        
+        if let Some(home_dir) = dirs::home_dir() {
+            let config_dir = home_dir.join(".config").join("jit");
+            let home_env_path = config_dir.join(".env");
+            
+            if home_env_path.exists() {
+                dotenv::from_path(&home_env_path).ok();
+            } else {
+                // If no config file exists yet, create the directory for future use
+                if !config_dir.exists() {
+                    if let Ok(_) = std::fs::create_dir_all(&config_dir) {
+                        eprintln!("No configuration found. Created directory at: {:?}", config_dir);
+                        eprintln!("Please create a .env file in this directory with your JIRA credentials:");
+                        eprintln!("  JIRA_BASE_URL=https://your-company.atlassian.net");
+                        eprintln!("  JIRA_API_TOKEN=your_api_token_here");
+                        eprintln!("  JIRA_USER_EMAIL=your_email@example.com");
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn extract_ticket_id(input: &str) -> Result<String> {
