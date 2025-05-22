@@ -19,6 +19,10 @@ struct Cli {
     /// Output in JSON format
     #[clap(long)]
     json: bool,
+    
+    /// Output as plain text in format "KEY: Summary"
+    #[clap(long)]
+    text: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -61,6 +65,8 @@ fn main() -> Result<()> {
             "ticket": issue.key,
             "summary": issue.fields.summary
         }));
+    } else if args.text {
+        println!("{}: {}", issue.key, issue.fields.summary);
     } else {
         println!("Ticket:   {}", issue.key);
         println!("Summary:  {}", issue.fields.summary);

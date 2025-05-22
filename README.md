@@ -20,6 +20,16 @@ Ticket:   ISSUE-123
 Summary:  Fix the login button in Safari
 ```
 
+### Text output (compact format)
+```bash
+jit --text ISSUE-123
+```
+
+Example output:
+```
+ISSUE-123: Fix the login button in Safari
+```
+
 ### JSON output
 ```bash
 # Using a ticket ID
