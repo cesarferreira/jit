@@ -2,7 +2,7 @@
 
 > A simple Rust CLI tool to extract ticket ID and summary information from JIRA issues using the JIRA API.
 
-![demo](assets/ss-1.png)
+![demo](assets/ss-3.png)
 
 
 ## Usage
