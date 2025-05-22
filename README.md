@@ -44,6 +44,41 @@ Example output:
 {"ticket":"ISSUE-123","summary":"Fix the login button in Safari"}
 ```
 
+### Detailed Information (Table)
+View detailed information about a ticket in a well-formatted table:
+
+```bash
+# Using a ticket ID
+jit --show ISSUE-123
+
+# Using a JIRA URL
+jit --show https://your-company.atlassian.net/browse/ISSUE-123
+```
+
+Example output:
+```
+TICKET DETAILS
+
+ISSUE-123: Fix the login button in Safari
+
+Type:       Bug                  Priority:   Medium
+Status:     In Progress          Sprint:     Development Sprint 27
+Assignee:   John Doe             Reporter:   Jane Smith
+Created:    2023-09-15           Updated:    2023-09-16
+Due Date:   2023-09-30
+
+DESCRIPTION
+
+The login button doesn't work properly in Safari browsers.
+Steps to reproduce:
+1. Open the login page in Safari
+2. Click on the login button
+3. Nothing happens
+
+Expected: The login form should be submitted.
+Actual: Nothing happens when the button is clicked.
+```
+
 ### Current Sprint Tickets
 View your tickets in the current active sprint:
 

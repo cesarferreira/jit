@@ -11,6 +11,8 @@ use dotenv::dotenv;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use regex::Regex;
 use colored::*;
+use prettytable::{Table, Row, Cell, format};
+use term_size;
 
 #[derive(Parser)]
 #[clap(author, version, about)]
@@ -30,6 +32,10 @@ struct Cli {
     /// Display your current tickets in a table
     #[clap(long)]
     my_tickets: bool,
+    
+    /// Show detailed information about a ticket in a table format
+    #[clap(long)]
+    show: bool,
     
     /// Maximum number of tickets to retrieve (default: 10)
     #[clap(long, default_value = "10")]
@@ -53,6 +59,22 @@ struct JiraIssueFields {
     status: Option<JiraStatus>,
     #[serde(rename = "customfield_10020", default)]
     sprint: Option<Vec<JiraSprint>>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    assignee: Option<JiraUser>,
+    #[serde(default)]
+    reporter: Option<JiraUser>,
+    #[serde(default)]
+    priority: Option<JiraPriority>,
+    #[serde(default)]
+    issuetype: Option<JiraIssueType>,
+    #[serde(default)]
+    created: Option<String>,
+    #[serde(default)]
+    updated: Option<String>,
+    #[serde(rename = "duedate", default)]
+    due_date: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -64,6 +86,21 @@ struct JiraStatus {
 struct JiraSprint {
     name: String,
     state: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct JiraUser {
+    displayName: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct JiraPriority {
+    name: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct JiraIssueType {
+    name: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -107,6 +144,8 @@ fn main() -> Result<()> {
             }));
         } else if args.text {
             println!("{}: {}", issue.key, issue.fields.summary);
+        } else if args.show {
+            display_detailed_ticket(&issue)?;
         } else {
             println!("Ticket:   {}", issue.key);
             println!("Summary:  {}", issue.fields.summary);
@@ -200,7 +239,7 @@ fn create_jira_client(email: &str, api_token: &str) -> Result<Client> {
 }
 
 fn fetch_jira_issue(client: &Client, base_url: &str, issue_key: &str) -> Result<JiraIssue> {
-    let url = format!("{}/rest/api/3/issue/{}", base_url, issue_key);
+    let url = format!("{}/rest/api/3/issue/{}?fields=summary,status,customfield_10020,description,assignee,reporter,priority,issuetype,created,updated,duedate", base_url, issue_key);
     
     let response = client.get(&url)
         .send()
@@ -394,4 +433,92 @@ fn get_colored_status(status: &str) -> String {
         
         _ => status.white().to_string(),
     }
+}
+
+/// Format a date string from JIRA's format to a more readable format
+fn format_date(date_str: &str) -> String {
+    if date_str.is_empty() {
+        return "Not set".to_string();
+    }
+    
+    // JIRA dates look like "2023-09-15T14:53:37.123+0000"
+    // We'll just extract the date part for simplicity
+    if let Some(date_part) = date_str.split('T').next() {
+        return date_part.to_string();
+    }
+    
+    date_str.to_string()
+}
+
+/// Display detailed information about a JIRA ticket in a table format
+fn display_detailed_ticket(issue: &JiraIssue) -> Result<()> {
+    println!("{}", "TICKET DETAILS".bold());
+    println!();
+    
+    // Print the ticket key and summary as headers
+    println!("{}: {}", issue.key.bold(), issue.fields.summary.bold());
+    println!();
+    
+    // Type and Priority
+    let issue_type = issue.fields.issuetype.as_ref().map_or("Not set", |t| &t.name);
+    let priority = issue.fields.priority.as_ref().map_or("Not set", |p| &p.name);
+    
+    // Status and Sprint
+    let status = issue.fields.status.as_ref().map_or("Not set", |s| &s.name);
+    let sprint = issue.fields.sprint.as_ref()
+        .and_then(|sprints| sprints.iter().find(|s| s.state == "active"))
+        .map_or("Not in sprint", |s| &s.name);
+    
+    // Assignee and Reporter
+    let assignee = issue.fields.assignee.as_ref().map_or("Unassigned", |a| &a.displayName);
+    let reporter = issue.fields.reporter.as_ref().map_or("Unknown", |r| &r.displayName);
+    
+    // Created and Updated dates
+    let created = issue.fields.created.as_ref().map_or("Unknown", |d| d);
+    let updated = issue.fields.updated.as_ref().map_or("Unknown", |d| d);
+    
+    // Due Date
+    let due_date = issue.fields.due_date.as_ref().map_or("Not set", |d| d);
+    
+    // Calculate width needed for label columns
+    let left_col_width = 12; // "Due Date: " width
+    let val_col_width = 18;  // Width for value columns
+    let spacer_width = 2;    // Space between columns
+    
+    // Create a custom-drawn table with perfectly aligned columns
+    println!("{:<left$} {:<val$} {:<left$} {:<val$}", 
+             "Type:".bold(), issue_type,
+             "Priority:".bold(), priority,
+             left = left_col_width, val = val_col_width);
+             
+    println!("{:<left$} {:<val$} {:<left$} {:<val$}", 
+             "Status:".bold(), get_colored_status(status),
+             "Sprint:".bold(), sprint,
+             left = left_col_width, val = val_col_width);
+             
+    println!("{:<left$} {:<val$} {:<left$} {:<val$}", 
+             "Assignee:".bold(), assignee,
+             "Reporter:".bold(), reporter,
+             left = left_col_width, val = val_col_width);
+             
+    println!("{:<left$} {:<val$} {:<left$} {:<val$}", 
+             "Created:".bold(), format_date(created),
+             "Updated:".bold(), format_date(updated),
+             left = left_col_width, val = val_col_width);
+             
+    println!("{:<left$} {:<val$}", 
+             "Due Date:".bold(), format_date(due_date),
+             left = left_col_width, val = val_col_width);
+    
+    println!();
+    println!("{}", "DESCRIPTION".bold());
+    println!();
+    
+    // Print the description (if available)
+    match &issue.fields.description {
+        Some(desc) if !desc.is_empty() => println!("{}", desc),
+        _ => println!("No description provided.")
+    }
+    
+    Ok(())
 }
