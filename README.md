@@ -1,6 +1,8 @@
-# JIT -> JIRA Issue Tool
+# JIT: JIRA Issue Tool
 
-A simple Rust CLI tool to extract ticket ID and summary information from JIRA issues using the JIRA API.
+> A simple Rust CLI tool to extract ticket ID and summary information from JIRA issues using the JIRA API.
+
+![demo](assets/ss-1.png)
 
 
 ## Usage
