@@ -1,0 +1,11 @@
+[package]
+name = "jira_title"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.98"
+clap = "4.5.38"
+headless_chrome = "1.0.17"
+regex = "1.11.1"
+tokio = "1.45.0"
