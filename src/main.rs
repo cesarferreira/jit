@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use dotenv::dotenv;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use regex::Regex;
-use prettytable::{Table, row};
+use colored::*;
 
 #[derive(Parser)]
 #[clap(author, version, about)]
@@ -51,8 +51,6 @@ struct JiraIssueFields {
     summary: String,
     #[serde(default)]
     status: Option<JiraStatus>,
-    #[serde(default)]
-    updated: Option<String>,
     #[serde(rename = "customfield_10020", default)]
     sprint: Option<Vec<JiraSprint>>,
 }
@@ -229,7 +227,7 @@ fn fetch_my_tickets(client: &Client, base_url: &str, limit: u32) -> Result<Vec<J
     let query = json!({
         "jql": "assignee = currentUser() AND sprint in openSprints() ORDER BY updated DESC",
         "maxResults": limit,
-        "fields": ["summary", "status", "updated", "customfield_10020"]
+        "fields": ["summary", "status", "customfield_10020"]
     });
     
     let response = client.post(&url)
@@ -267,26 +265,133 @@ fn display_tickets_table(tickets: &[JiraIssue]) -> Result<()> {
     println!("Current Sprint: {}", sprint_name);
     println!();
     
-    let mut table = Table::new();
+    // Create a simple table with basic formatting
+    let mut table = vec![
+        vec!["Key".to_string(), "Summary".to_string(), "Status".to_string()]
+    ];
     
-    // Add table header without sprint column
-    table.add_row(row!["Key", "Summary", "Status", "Updated"]);
-    
-    // Add rows for each ticket
+    // Add the data rows
     for ticket in tickets {
-        let status = ticket.fields.status.as_ref().map_or("Unknown", |s| &s.name);
-        let updated = ticket.fields.updated.as_ref().map_or("Unknown", |d| d);
+        let status_text = ticket.fields.status.as_ref().map_or("Unknown", |s| &s.name);
+        let summary = truncate_with_ellipsis(&ticket.fields.summary, 58);
+        let colored_status = get_colored_status(status_text);
         
-        table.add_row(row![
-            &ticket.key,
-            &ticket.fields.summary,
-            status,
-            &updated[0..10] // Just show the date part
+        table.push(vec![
+            ticket.key.clone(),
+            summary,
+            colored_status
         ]);
     }
     
-    // Print the table
-    table.printstd();
+    // Calculate column widths
+    let mut col_widths = vec![20, 7, 6]; // Set Key column to fixed 20 width
+    for row in &table {
+        for (i, cell) in row.iter().enumerate() {
+            // For status column with color codes, use the length of the plain text
+            let cell_width = if i == 2 && row[0] != "Key" {
+                // This is a status cell, get the original text length
+                let status_text = tickets[table.iter().position(|r| &r[0] == &row[0]).unwrap_or(0) - 1]
+                    .fields.status.as_ref().map_or("Unknown", |s| &s.name);
+                status_text.len()
+            } else {
+                cell.len()
+            };
+            
+            if i < col_widths.len() {
+                col_widths[i] = col_widths[i].max(cell_width + 2);
+            }
+        }
+    }
+    
+    // Print top border
+    print!("┌");
+    for (i, width) in col_widths.iter().enumerate() {
+        print!("{}", "─".repeat(*width));
+        if i < col_widths.len() - 1 {
+            print!("┬");
+        }
+    }
+    println!("┐");
+    
+    // Print header row
+    for (row_idx, row) in table.iter().enumerate() {
+        print!("│");
+        for (col_idx, cell) in row.iter().enumerate() {
+            let cell_text = if row_idx == 0 {
+                format!(" {:<width$}", cell, width = col_widths[col_idx] - 1)
+            } else if col_idx == 2 {
+                // Add proper spacing for colored status
+                let status_text = tickets[row_idx - 1].fields.status.as_ref().map_or("Unknown", |s| &s.name);
+                format!(" {}{}", cell, " ".repeat(col_widths[col_idx] - status_text.len() - 1))
+            } else {
+                format!(" {:<width$}", cell, width = col_widths[col_idx] - 1)
+            };
+            
+            print!("{}", cell_text);
+            print!("│");
+        }
+        println!();
+        
+        // Print row separator
+        if row_idx < table.len() - 1 {
+            print!("├");
+            for (i, width) in col_widths.iter().enumerate() {
+                print!("{}", "─".repeat(*width));
+                if i < col_widths.len() - 1 {
+                    print!("┼");
+                }
+            }
+            println!("┤");
+        }
+    }
+    
+    // Print bottom border
+    print!("└");
+    for (i, width) in col_widths.iter().enumerate() {
+        print!("{}", "─".repeat(*width));
+        if i < col_widths.len() - 1 {
+            print!("┴");
+        }
+    }
+    println!("┘");
     
     Ok(())
+}
+
+// Truncate a string to max_len and add ellipsis if needed
+fn truncate_with_ellipsis(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        return s.to_string();
+    }
+    
+    let mut result = s.chars().take(max_len - 3).collect::<String>();
+    result.push_str("...");
+    result
+}
+
+/// Returns color-coded status text based on the status name
+fn get_colored_status(status: &str) -> String {
+    match status.to_lowercase().as_str() {
+        s if s.contains("done") => status.bright_green().bold().to_string(),
+        s if s.contains("complete") => status.bright_green().bold().to_string(),
+        s if s.contains("resolved") => status.bright_green().bold().to_string(),
+        
+        s if s.contains("progress") => status.bright_yellow().bold().to_string(),
+        s if s.contains("review") => status.yellow().bold().to_string(),
+        s if s.contains("implement") => status.bright_yellow().bold().to_string(),
+        s if s.contains("testing") => status.bright_yellow().bold().to_string(),
+        
+        s if s.contains("todo") => status.bright_blue().to_string(),
+        s if s.contains("backlog") => status.blue().to_string(),
+        s if s.contains("selected") => status.cyan().to_string(),
+        s if s.contains("open") => status.bright_blue().to_string(),
+        
+        s if s.contains("block") => status.bright_red().bold().to_string(),
+        s if s.contains("impediment") => status.bright_red().bold().to_string(),
+        s if s.contains("cancel") => status.red().bold().to_string(),
+        s if s.contains("won't") => status.red().bold().to_string(),
+        s if s.contains("wont") => status.red().bold().to_string(),
+        
+        _ => status.white().to_string(),
+    }
 }
