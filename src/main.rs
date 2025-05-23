@@ -5,14 +5,13 @@ use reqwest::blocking::{Client, ClientBuilder};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::Deserialize;
 use serde_json::json;
+use serde_json::Value;
 use std::env;
 use std::path::PathBuf;
 use dotenv::dotenv;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use regex::Regex;
 use colored::*;
-use prettytable::{Table, Row, Cell, format};
-use term_size;
 
 #[derive(Parser)]
 #[clap(author, version, about)]
@@ -60,7 +59,7 @@ struct JiraIssueFields {
     #[serde(rename = "customfield_10020", default)]
     sprint: Option<Vec<JiraSprint>>,
     #[serde(default)]
-    description: Option<String>,
+    description: Option<Value>,
     #[serde(default)]
     assignee: Option<JiraUser>,
     #[serde(default)]
@@ -450,6 +449,49 @@ fn format_date(date_str: &str) -> String {
     date_str.to_string()
 }
 
+/// Extract plain text from a JIRA description in the Atlassian Document Format (ADF)
+fn extract_plain_text_from_description(desc: &Value) -> String {
+    // If it's not an object with content, return empty string
+    if !desc.is_object() || !desc.get("content").is_some() {
+        return String::new();
+    }
+
+    let mut result = String::new();
+    
+    // Try to process document content
+    if let Some(content) = desc.get("content").and_then(|c| c.as_array()) {
+        for item in content {
+            // Process nested content
+            process_content_node(item, &mut result);
+            result.push('\n');
+        }
+    }
+    
+    result
+}
+
+/// Recursively process content nodes in Atlassian Document Format
+fn process_content_node(node: &Value, result: &mut String) {
+    // Process text nodes
+    if let Some(text) = node.get("text").and_then(|t| t.as_str()) {
+        result.push_str(text);
+    }
+    
+    // Recursively process nested content
+    if let Some(content) = node.get("content").and_then(|c| c.as_array()) {
+        for item in content {
+            process_content_node(item, result);
+            
+            // Add a newline if this is a paragraph or list item
+            if let Some(node_type) = node.get("type").and_then(|t| t.as_str()) {
+                if node_type == "paragraph" || node_type == "listItem" {
+                    result.push('\n');
+                }
+            }
+        }
+    }
+}
+
 /// Display detailed information about a JIRA ticket in a table format
 fn display_detailed_ticket(issue: &JiraIssue) -> Result<()> {
     println!("{}", "TICKET DETAILS".bold());
@@ -516,8 +558,21 @@ fn display_detailed_ticket(issue: &JiraIssue) -> Result<()> {
     
     // Print the description (if available)
     match &issue.fields.description {
-        Some(desc) if !desc.is_empty() => println!("{}", desc),
-        _ => println!("No description provided.")
+        Some(desc) => {
+            if desc.is_null() {
+                println!("No description provided.");
+            } else {
+                // First try to extract plain text
+                let plain_text = extract_plain_text_from_description(desc);
+                if !plain_text.is_empty() {
+                    println!("{}", plain_text);
+                } else {
+                    // Fall back to JSON if text extraction fails
+                    println!("{}", serde_json::to_string_pretty(desc).unwrap_or_else(|_| "Cannot display description.".to_string()));
+                }
+            }
+        },
+        None => println!("No description provided.")
     }
     
     Ok(())
