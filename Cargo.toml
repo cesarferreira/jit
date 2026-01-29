@@ -1,6 +1,6 @@
 [package]
 name = "jit-cli"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "A CLI for fetching JIRA issue summaries, details, and current sprint tickets."
 readme = "README.md"
