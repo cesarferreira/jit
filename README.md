@@ -4,6 +4,13 @@
 
 ![demo](assets/ss-3.png)
 
+## Installation
+
+```bash
+cargo install jit-cli
+```
+
+This installs the `jit` command.
 
 ## Usage
 

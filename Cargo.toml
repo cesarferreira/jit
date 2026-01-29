@@ -1,7 +1,18 @@
 [package]
-name = "jit"
+name = "jit-cli"
 version = "0.1.0"
 edition = "2024"
+description = "A CLI for fetching JIRA issue summaries, details, and current sprint tickets."
+readme = "README.md"
+license = "MIT"
+repository = "https://github.com/cesarferreira/jit"
+homepage = "https://github.com/cesarferreira/jit"
+keywords = ["jira", "cli", "issue", "atlassian"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "jit"
+path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.98"
