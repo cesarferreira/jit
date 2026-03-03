@@ -1,6 +1,6 @@
 # JIT: JIRA Issue Tool
 
-> A simple Rust CLI tool to extract ticket ID and summary information from JIRA issues using the JIRA API.
+> A Rust CLI tool to fetch Jira ticket summaries, details, comments, and sprint tickets from the Jira API.
 
 ![demo](assets/ss-3.png)
 
@@ -46,6 +46,15 @@ jit --json ISSUE-123
 
 # Using a JIRA URL
 jit --json https://your-company.atlassian.net/browse/ISSUE-123
+
+# Include description, metadata, and recent comments
+jit --json --full ISSUE-123
+
+# Include linked pull requests
+jit --json --include-prs ISSUE-123
+
+# Include comments from a specific date onward
+jit --json --include-comments --since 2026-01-01 ISSUE-123
 ```
 
 Example output:
@@ -62,7 +71,47 @@ jit --show ISSUE-123
 
 # Using a JIRA URL
 jit --show https://your-company.atlassian.net/browse/ISSUE-123
+
+# Include comments (latest 5 by default)
+jit --show --include-comments ISSUE-123
+
+# Include all comments and description
+jit --show --full --all-comments ISSUE-123
+
+# Include linked pull requests
+jit --show --include-prs ISSUE-123
+
+# Include only comments after a date
+jit --show --include-comments --since 2026-01-01 ISSUE-123
 ```
+
+### Detail and Comment Flags
+Use these flags with `--show` or `--json` when you need more than key+summary:
+
+```bash
+# Include description only
+jit --show --include-description ISSUE-123
+
+# Include comments only (latest 5 by default)
+jit --show --include-comments ISSUE-123
+
+# Include description + comments + metadata/timestamps
+jit --show --full ISSUE-123
+
+# Include pull requests
+jit --show --include-prs ISSUE-123
+
+# Limit number of returned comments
+jit --json --include-comments --comments-limit 3 ISSUE-123
+
+# Return all comments
+jit --json --include-comments --all-comments ISSUE-123
+
+# Filter comments by creation date (inclusive)
+jit --json --include-comments --since 2026-01-01 ISSUE-123
+```
+
+`--full` is equivalent to combining `--include-description`, `--include-comments`, and `--include-prs` for rich ticket output.
 
 Example output:
 ```
@@ -97,6 +146,9 @@ jit
 
 # View all your tickets in the current sprint
 jit --my-tickets
+
+# Show sprint tickets with linked PR IDs
+jit --my-tickets --include-prs
 
 # Limit the number of tickets shown
 jit --my-tickets --limit 5
