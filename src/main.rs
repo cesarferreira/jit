@@ -259,7 +259,8 @@ fn fetch_jira_issue(client: &Client, base_url: &str, issue_key: &str) -> Result<
 }
 
 fn fetch_my_tickets(client: &Client, base_url: &str, limit: u32) -> Result<Vec<JiraIssue>> {
-    let url = format!("{}/rest/api/3/search", base_url);
+    // Jira removed /rest/api/3/search for JQL queries in favor of /search/jql.
+    let url = format!("{}/rest/api/3/search/jql", base_url);
     
     // JQL query to find issues assigned to the current user in the active sprint
     let query = json!({
