@@ -92,6 +92,9 @@ Actual: Nothing happens when the button is clicked.
 View your tickets in the current active sprint:
 
 ```bash
+# Equivalent default behavior (no args)
+jit
+
 # View all your tickets in the current sprint
 jit --my-tickets
 

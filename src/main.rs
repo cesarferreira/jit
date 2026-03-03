@@ -17,7 +17,6 @@ use colored::*;
 #[clap(author, version, about)]
 struct Cli {
     /// JIRA issue key (e.g., RW-1931) or URL (e.g., https://company.atlassian.net/browse/RW-1931)
-    #[clap(required_unless_present = "my_tickets")]
     ticket: Option<String>,
     
     /// Output in JSON format
@@ -28,7 +27,7 @@ struct Cli {
     #[clap(long)]
     text: bool,
     
-    /// Display your current tickets in a table
+    /// Display your current tickets in a table (default when no ticket is provided)
     #[clap(long)]
     my_tickets: bool,
     
@@ -89,7 +88,8 @@ struct JiraSprint {
 
 #[derive(Debug, Deserialize, Default)]
 struct JiraUser {
-    displayName: String,
+    #[serde(rename = "displayName")]
+    display_name: String,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -124,7 +124,7 @@ fn main() -> Result<()> {
     // Create HTTP client for JIRA API
     let client = create_jira_client(&jira_user_email, &jira_api_token)?;
     
-    if args.my_tickets {
+    if args.my_tickets || args.ticket.is_none() {
         // Fetch and display current tickets
         let tickets = fetch_my_tickets(&client, &jira_base_url, args.limit)?;
         display_tickets_table(&tickets)?;
@@ -149,8 +149,6 @@ fn main() -> Result<()> {
             println!("Ticket:   {}", issue.key);
             println!("Summary:  {}", issue.fields.summary);
         }
-    } else {
-        return Err(anyhow!("Either provide a ticket ID or use --my-tickets"));
     }
     
     Ok(())
@@ -513,8 +511,8 @@ fn display_detailed_ticket(issue: &JiraIssue) -> Result<()> {
         .map_or("Not in sprint", |s| &s.name);
     
     // Assignee and Reporter
-    let assignee = issue.fields.assignee.as_ref().map_or("Unassigned", |a| &a.displayName);
-    let reporter = issue.fields.reporter.as_ref().map_or("Unknown", |r| &r.displayName);
+    let assignee = issue.fields.assignee.as_ref().map_or("Unassigned", |a| &a.display_name);
+    let reporter = issue.fields.reporter.as_ref().map_or("Unknown", |r| &r.display_name);
     
     // Created and Updated dates
     let created = issue.fields.created.as_ref().map_or("Unknown", |d| d);
@@ -526,8 +524,6 @@ fn display_detailed_ticket(issue: &JiraIssue) -> Result<()> {
     // Calculate width needed for label columns
     let left_col_width = 12; // "Due Date: " width
     let val_col_width = 18;  // Width for value columns
-    let spacer_width = 2;    // Space between columns
-    
     // Create a custom-drawn table with perfectly aligned columns
     println!("{:<left$} {:<val$} {:<left$} {:<val$}", 
              "Type:".bold(), issue_type,
