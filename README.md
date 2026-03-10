@@ -1,6 +1,6 @@
 # JIT: JIRA Issue Tool
 
-> A Rust CLI tool to fetch Jira ticket summaries, details, comments, and sprint tickets from the Jira API.
+> A Rust CLI tool to fetch Jira ticket summaries, details, comments, sprint tickets, and create backlog issues via the Jira API.
 
 ![demo](assets/ss-3.png)
 
@@ -168,6 +168,60 @@ Current Sprint: Development Sprint 27
 | PROJ-125  | Update API documentation         | Done              |
 +-----------+----------------------------------+-------------------+
 ```
+
+### Create Backlog Tickets
+Create a new issue without sprint assignment so it lands in the backlog on scrum boards:
+
+```bash
+# Create a task in the backlog
+jit create --project RW --summary "Improve ticket creation flow"
+
+# Create a story with a plain-text description
+jit create \
+  --project RW \
+  --type Story \
+  --summary "Support backlog ticket creation" \
+  --description $'Add a create command\nCover it with tests'
+
+# Create a bug and assign it to a specific Jira account ID
+jit create \
+  --project RW \
+  --type Bug \
+  --assignee 5b10a2844c20165700ede21g \
+  --summary "Fix backlog create validation"
+
+# Create a story directly in the current sprint
+jit create \
+  --project RW \
+  --type Story \
+  --current-sprint \
+  --summary "Deliver current sprint ticket creation"
+
+# Create in the current sprint for a specific board
+jit create \
+  --project RW \
+  --current-sprint \
+  --board 123 \
+  --summary "Use the board's active sprint"
+
+# Return the created issue as JSON
+jit create --project RW --summary "Improve ticket creation flow" --json
+```
+
+Example output:
+```
+Created:  RW-123
+Project:  RW
+Type:     Task
+Assignee: Cesar Ferreira
+Summary:  Improve ticket creation flow
+Backlog:  Yes (created without sprint assignment)
+URL:      https://your-company.atlassian.net/browse/RW-123
+```
+
+The command creates the issue through Jira's issue-create API and does not assign it to a sprint unless you pass `--current-sprint`. On Scrum boards, that backlog-by-default behavior is what leaves the issue in the backlog. By default, `jit create` assigns the issue to the current Jira user with `--assignee me`; pass `--assignee <account-id>` to assign someone else, or `--assignee unassigned` to leave it unassigned.
+
+When `--current-sprint` is set, `jit` resolves the active sprint from Jira Software and adds the new issue to it after creation. If you pass `--board <id>`, that board is used directly. Otherwise, `jit` looks at accessible Scrum boards for the project and picks the active sprint with the most recent `startDate`. If your Jira project uses custom workflows or board rules, sprint visibility and backlog behavior still depend on that Jira configuration.
 
 
 ## Configuration
