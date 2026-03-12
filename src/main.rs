@@ -29,6 +29,8 @@ struct Cli {
 enum Commands {
     /// Create a new Jira issue without sprint assignment so it lands in the backlog on scrum boards
     Create(CreateArgs),
+    /// Edit an existing Jira issue's core fields
+    Edit(EditArgs),
 }
 
 #[derive(Args, Debug)]
@@ -120,6 +122,32 @@ struct CreateArgs {
     board: Option<u64>,
 
     /// Output created issue details in JSON format
+    #[clap(long)]
+    json: bool,
+}
+
+#[derive(Args, Debug)]
+struct EditArgs {
+    /// JIRA issue key (e.g., RW-1931) or URL (e.g., https://company.atlassian.net/browse/RW-1931)
+    ticket: String,
+
+    /// Updated ticket summary
+    #[clap(long)]
+    summary: Option<String>,
+
+    /// Updated plain-text ticket description; pass an empty string to clear it
+    #[clap(long)]
+    description: Option<String>,
+
+    /// Updated Jira issue type name, such as Task, Bug, or Story
+    #[clap(long = "type")]
+    issue_type: Option<String>,
+
+    /// Updated assignee account ID, or `me` / `unassigned`
+    #[clap(long)]
+    assignee: Option<String>,
+
+    /// Output updated issue details in JSON format
     #[clap(long)]
     json: bool,
 }
@@ -304,6 +332,9 @@ fn main() -> Result<()> {
     match args.command {
         Some(Commands::Create(create_args)) => {
             run_create_issue_command(&client, &jira_base_url, &create_args)
+        }
+        Some(Commands::Edit(edit_args)) => {
+            run_edit_issue_command(&client, &jira_base_url, &edit_args)
         }
         None => run_query_mode(&client, &jira_base_url, args.query),
     }
@@ -511,6 +542,106 @@ fn run_create_issue_command(client: &Client, jira_base_url: &str, args: &CreateA
     Ok(())
 }
 
+fn run_edit_issue_command(client: &Client, jira_base_url: &str, args: &EditArgs) -> Result<()> {
+    if args.summary.is_none()
+        && args.description.is_none()
+        && args.issue_type.is_none()
+        && args.assignee.is_none()
+    {
+        return Err(anyhow!(
+            "No editable fields provided. Pass at least one of --summary, --description, --type, or --assignee."
+        ));
+    }
+
+    let ticket_id = extract_ticket_id(&args.ticket)?;
+    let resolved_assignee = args
+        .assignee
+        .as_deref()
+        .map(|assignee| resolve_create_assignee(client, jira_base_url, assignee))
+        .transpose()?;
+    update_jira_issue(
+        client,
+        jira_base_url,
+        &ticket_id,
+        args,
+        resolved_assignee
+            .as_ref()
+            .and_then(|assignee| assignee.account_id.as_deref()),
+    )?;
+
+    let issue_url = format!("{}/browse/{}", jira_base_url, ticket_id);
+    let mut updated_fields = Vec::new();
+    if args.summary.is_some() {
+        updated_fields.push("summary");
+    }
+    if args.description.is_some() {
+        updated_fields.push("description");
+    }
+    if args.issue_type.is_some() {
+        updated_fields.push("issue_type");
+    }
+    if args.assignee.is_some() {
+        updated_fields.push("assignee");
+    }
+
+    if args.json {
+        let mut payload = json!({
+            "ticket": ticket_id,
+            "updated_fields": updated_fields,
+            "url": issue_url,
+        });
+
+        if let Some(obj) = payload.as_object_mut() {
+            if let Some(summary) = args.summary.as_ref() {
+                obj.insert("summary".to_string(), json!(summary));
+            }
+            if let Some(description) = args.description.as_ref() {
+                obj.insert(
+                    "description".to_string(),
+                    if description.trim().is_empty() {
+                        Value::Null
+                    } else {
+                        json!(description)
+                    },
+                );
+            }
+            if let Some(issue_type) = args.issue_type.as_ref() {
+                obj.insert("issue_type".to_string(), json!(issue_type));
+            }
+            if let Some(assignee) = resolved_assignee.as_ref() {
+                obj.insert("assignee".to_string(), json!(assignee.label));
+            }
+        }
+
+        println!("{}", payload);
+    } else {
+        println!("Updated:  {}", ticket_id);
+        println!("Fields:   {}", updated_fields.join(", "));
+        if let Some(summary) = args.summary.as_ref() {
+            println!("Summary:  {}", summary);
+        }
+        if let Some(issue_type) = args.issue_type.as_ref() {
+            println!("Type:     {}", issue_type);
+        }
+        if let Some(assignee) = resolved_assignee.as_ref() {
+            println!("Assignee: {}", assignee.label);
+        }
+        if let Some(description) = args.description.as_ref() {
+            println!(
+                "Description: {}",
+                if description.trim().is_empty() {
+                    "Cleared"
+                } else {
+                    "Updated"
+                }
+            );
+        }
+        println!("URL:      {}", issue_url);
+    }
+
+    Ok(())
+}
+
 fn extract_ticket_id(input: &str) -> Result<String> {
     // If input starts with http/https, it's a URL
     if input.starts_with("http://") || input.starts_with("https://") {
@@ -674,6 +805,33 @@ fn create_jira_issue(
     }
 
     response.json().context("Failed to parse JIRA API response")
+}
+
+fn update_jira_issue(
+    client: &Client,
+    base_url: &str,
+    issue_key: &str,
+    args: &EditArgs,
+    assignee_id: Option<&str>,
+) -> Result<()> {
+    let url = format!("{}/rest/api/3/issue/{}", base_url, issue_key);
+    let payload = build_issue_update_payload(args, assignee_id);
+
+    let response = client
+        .put(&url)
+        .json(&payload)
+        .send()
+        .context("Failed to send request to JIRA API")?;
+
+    if !response.status().is_success() {
+        return Err(anyhow!(
+            "JIRA API request failed with status: {} - {}",
+            response.status(),
+            response.text().unwrap_or_default()
+        ));
+    }
+
+    Ok(())
 }
 
 fn resolve_create_assignee(
@@ -1019,6 +1177,38 @@ fn build_issue_create_payload(args: &CreateArgs, assignee_id: Option<&str>) -> V
         .filter(|text| !text.is_empty())
     {
         fields.insert("description".to_string(), text_to_adf(description));
+    }
+
+    json!({ "fields": fields })
+}
+
+fn build_issue_update_payload(args: &EditArgs, assignee_id: Option<&str>) -> Value {
+    let mut fields = serde_json::Map::new();
+
+    if let Some(summary) = args.summary.as_deref() {
+        fields.insert("summary".to_string(), json!(summary));
+    }
+
+    if let Some(issue_type) = args.issue_type.as_deref() {
+        fields.insert("issuetype".to_string(), json!({ "name": issue_type }));
+    }
+
+    if args.assignee.is_some() {
+        let assignee_value = assignee_id
+            .map(|account_id| json!({ "accountId": account_id }))
+            .unwrap_or(Value::Null);
+        fields.insert("assignee".to_string(), assignee_value);
+    }
+
+    if let Some(description) = args.description.as_deref() {
+        fields.insert(
+            "description".to_string(),
+            if description.trim().is_empty() {
+                Value::Null
+            } else {
+                text_to_adf(description)
+            },
+        );
     }
 
     json!({ "fields": fields })
@@ -1825,6 +2015,37 @@ mod tests {
     }
 
     #[test]
+    fn cli_parses_edit_command() {
+        let cli = Cli::try_parse_from([
+            "jit",
+            "edit",
+            "RW-123",
+            "--summary",
+            "Updated summary",
+            "--description",
+            "First line\nSecond line",
+            "--type",
+            "Bug",
+            "--assignee",
+            "unassigned",
+            "--json",
+        ])
+        .expect("edit command should parse");
+
+        match cli.command {
+            Some(Commands::Edit(args)) => {
+                assert_eq!(args.ticket, "RW-123");
+                assert_eq!(args.summary.as_deref(), Some("Updated summary"));
+                assert_eq!(args.description.as_deref(), Some("First line\nSecond line"));
+                assert_eq!(args.issue_type.as_deref(), Some("Bug"));
+                assert_eq!(args.assignee.as_deref(), Some("unassigned"));
+                assert!(args.json);
+            }
+            _ => panic!("expected edit command"),
+        }
+    }
+
+    #[test]
     fn build_issue_create_payload_uses_adf_for_description() {
         let args = CreateArgs {
             project: "RW".to_string(),
@@ -1868,6 +2089,55 @@ mod tests {
     }
 
     #[test]
+    fn build_issue_update_payload_supports_core_editable_fields() {
+        let args = EditArgs {
+            ticket: "RW-123".to_string(),
+            summary: Some("Updated summary".to_string()),
+            description: Some("First line\nSecond line".to_string()),
+            issue_type: Some("Bug".to_string()),
+            assignee: Some("account-id-123".to_string()),
+            json: false,
+        };
+
+        let payload = build_issue_update_payload(&args, Some("account-id-123"));
+
+        assert_eq!(payload["fields"]["summary"], "Updated summary");
+        assert_eq!(payload["fields"]["issuetype"]["name"], "Bug");
+        assert_eq!(payload["fields"]["assignee"]["accountId"], "account-id-123");
+        assert_eq!(payload["fields"]["description"]["type"], "doc");
+        assert_eq!(payload["fields"]["description"]["version"], 1);
+        assert_eq!(
+            payload["fields"]["description"]["content"][0]["content"][0]["text"],
+            "First line"
+        );
+        assert_eq!(
+            payload["fields"]["description"]["content"][0]["content"][1]["type"],
+            "hardBreak"
+        );
+        assert_eq!(
+            payload["fields"]["description"]["content"][0]["content"][2]["text"],
+            "Second line"
+        );
+    }
+
+    #[test]
+    fn build_issue_update_payload_clears_description_and_assignee() {
+        let args = EditArgs {
+            ticket: "RW-123".to_string(),
+            summary: None,
+            description: Some(String::new()),
+            issue_type: None,
+            assignee: Some("unassigned".to_string()),
+            json: false,
+        };
+
+        let payload = build_issue_update_payload(&args, None);
+
+        assert_eq!(payload["fields"]["description"], Value::Null);
+        assert_eq!(payload["fields"]["assignee"], Value::Null);
+    }
+
+    #[test]
     fn create_jira_issue_posts_expected_request_for_explicit_assignee() {
         let args = CreateArgs {
             project: "RW".to_string(),
@@ -1899,6 +2169,37 @@ mod tests {
                 || request.contains("\r\nContent-Type: application/json\r\n")
         );
 
+        let body = request
+            .split("\r\n\r\n")
+            .nth(1)
+            .expect("http request should contain a body");
+        let parsed_body: Value =
+            serde_json::from_str(body).expect("request body should be valid json");
+        assert_eq!(parsed_body, expected_payload);
+    }
+
+    #[test]
+    fn update_jira_issue_puts_expected_request() {
+        let args = EditArgs {
+            ticket: "RW-123".to_string(),
+            summary: Some("Updated summary".to_string()),
+            description: Some("Description text".to_string()),
+            issue_type: Some("Story".to_string()),
+            assignee: Some("account-id-123".to_string()),
+            json: false,
+        };
+        let expected_payload = build_issue_update_payload(&args, Some("account-id-123"));
+        let (base_url, requests, handle) = spawn_test_server("HTTP/1.1 204 No Content", "");
+        let client = create_jira_client("user@example.com", "token").expect("client");
+
+        update_jira_issue(&client, &base_url, "RW-123", &args, Some("account-id-123"))
+            .expect("issue update should succeed");
+        let request = requests
+            .recv_timeout(Duration::from_secs(2))
+            .expect("request should be captured");
+        handle.join().expect("server thread should finish");
+
+        assert!(request.starts_with("PUT /rest/api/3/issue/RW-123 HTTP/1.1"));
         let body = request
             .split("\r\n\r\n")
             .nth(1)
