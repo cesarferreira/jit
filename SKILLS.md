@@ -6,7 +6,7 @@ This repository uses one primary Codex skill for Jira workflows:
 
 - Skill file: `/Users/cesarferreira/.codex/skills/jit/SKILL.md`
 - Purpose: help users run `jit` to query Jira tickets, inspect details, list sprint tickets, create backlog issues, and create tickets directly in the current sprint.
-  It also supports editing existing issue summary, description, type, and assignee fields.
+  It also supports editing existing tickets, including Task issues, across summary, description, type, and assignee fields.
 - Trigger examples:
   - "Show me the summary for `PROJ-123`"
   - "Get ticket details with comments"
@@ -16,6 +16,7 @@ This repository uses one primary Codex skill for Jira workflows:
   - "Create a backlog ticket in Jira"
   - "Create a Jira ticket in the current sprint"
   - "Edit a Jira ticket"
+  - "Edit a Jira task"
 
 ### Common commands this skill should suggest
 
@@ -38,6 +39,7 @@ jit edit PROJ-123 --summary "Improve edit flow"
 jit edit PROJ-123 --description $'First line\nSecond line'
 jit edit PROJ-123 --description ''
 jit edit PROJ-123 --type Bug --assignee unassigned
+jit edit PROJ-123 --type Task --summary "Refine task summary"
 jit edit PROJ-123 --summary "Improve edit flow" --json
 jit
 ```

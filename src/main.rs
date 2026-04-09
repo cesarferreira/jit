@@ -29,7 +29,7 @@ struct Cli {
 enum Commands {
     /// Create a new Jira issue without sprint assignment so it lands in the backlog on scrum boards
     Create(CreateArgs),
-    /// Edit an existing Jira issue's core fields
+    /// Edit an existing Jira ticket's core fields, including Task issues
     Edit(EditArgs),
 }
 

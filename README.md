@@ -1,6 +1,6 @@
 # JIT: JIRA Issue Tool
 
-> A Rust CLI tool to fetch Jira ticket summaries, details, comments, sprint tickets, and create or edit issues via the Jira API.
+> A Rust CLI tool to fetch Jira ticket summaries, details, comments, sprint tickets, and create or edit Jira issues, including tasks, via the Jira API.
 
 ![demo](assets/ss-3.png)
 
@@ -224,7 +224,7 @@ The command creates the issue through Jira's issue-create API and does not assig
 When `--current-sprint` is set, `jit` resolves the active sprint from Jira Software and adds the new issue to it after creation. If you pass `--board <id>`, that board is used directly. Otherwise, `jit` looks at accessible Scrum boards for the project and picks the active sprint with the most recent `startDate`. If your Jira project uses custom workflows or board rules, sprint visibility and backlog behavior still depend on that Jira configuration.
 
 ### Edit Existing Tickets
-Update an existing issue's summary, description, type, or assignee:
+Update an existing Jira ticket, including Task issues, by changing its summary, description, type, or assignee:
 
 ```bash
 # Update the summary
@@ -238,6 +238,9 @@ jit edit RW-123 --description ''
 
 # Change issue type and assignee
 jit edit RW-123 --type Bug --assignee 5b10a2844c20165700ede21g
+
+# Edit a task and keep it typed as Task
+jit edit RW-123 --type Task --summary "Refine task summary"
 
 # Unassign the issue
 jit edit RW-123 --assignee unassigned
@@ -257,7 +260,7 @@ Summary:  Improve edit flow
 URL:      https://your-company.atlassian.net/browse/RW-123
 ```
 
-`jit edit` updates only the fields you pass. Description values are sent as Atlassian Document Format, `--description ''` clears the description, and `--assignee unassigned` clears the assignee. Like `create`, `--assignee me` resolves to the current Jira user before sending the update.
+`jit edit` updates only the fields you pass. It works for any Jira issue type the API allows, including Task issues. Description values are sent as Atlassian Document Format, `--description ''` clears the description, and `--assignee unassigned` clears the assignee. Like `create`, `--assignee me` resolves to the current Jira user before sending the update.
 
 
 ## Configuration
