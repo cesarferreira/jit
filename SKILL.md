@@ -15,16 +15,16 @@ Use this skill to execute `jit` for common Jira workflows: ticket lookup, detail
 - Installed CLI: `jit --version`
 - From source in this repo: `cargo run -- <args>`
 2. Provide Jira credentials through one of:
-- `--env-file <path>`
-- `.env` in the current directory
-- `~/.config/jit/.env`
-- shell environment variables
+- `--config-file <path>`
+- `config.toml` in the current directory
+- `~/.config/jit/config.toml`
 
-Required environment variables:
-```bash
-JIRA_BASE_URL=https://your-company.atlassian.net
-JIRA_API_TOKEN=your_api_token_here
-JIRA_USER_EMAIL=your_email@example.com
+Required config values:
+```toml
+[jira]
+base_url = "https://your-company.atlassian.net"
+api_token = "your_api_token_here"
+user_email = "your_email@example.com"
 ```
 
 ## Core Commands
@@ -86,12 +86,12 @@ jit edit RW-123 --type Task --summary "Refine task summary"
 jit edit RW-123 --assignee me
 jit edit RW-123 --summary "Improve edit flow" --json
 ```
-10. Use a specific env file:
+10. Use a specific config file:
 ```bash
-jit --env-file /path/to/.env ISSUE-123
-jit --env-file /path/to/.env --my-tickets
-jit --env-file /path/to/.env create --project RW --summary "Improve ticket creation flow"
-jit --env-file /path/to/.env edit RW-123 --summary "Improve edit flow"
+jit --config-file /path/to/config.toml ISSUE-123
+jit --config-file /path/to/config.toml --my-tickets
+jit --config-file /path/to/config.toml create --project RW --summary "Improve ticket creation flow"
+jit --config-file /path/to/config.toml edit RW-123 --summary "Improve edit flow"
 ```
 
 ## Execution Workflow
@@ -132,8 +132,8 @@ jit --env-file /path/to/.env edit RW-123 --summary "Improve edit flow"
 ## Troubleshooting
 
 1. Missing credentials:
-- Symptom: `JIRA_BASE_URL not set`, `JIRA_API_TOKEN not set`, or `JIRA_USER_EMAIL not set`
-- Fix: provide env vars via `.env`, `--env-file`, or shell exports
+- Symptom: configuration is missing or invalid
+- Fix: provide credentials via `config.toml` or `--config-file`
 2. URL parsing failure:
 - Symptom: `Could not extract ticket ID from URL`
 - Fix: ensure URL matches `/browse/PROJECT-123`

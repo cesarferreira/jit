@@ -4,7 +4,6 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chrono::{DateTime, FixedOffset};
 use clap::{Args, Parser, Subcommand};
 use colored::*;
-use dotenv::dotenv;
 use regex::Regex;
 use reqwest::blocking::{Client, ClientBuilder};
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
@@ -12,8 +11,8 @@ use serde::Deserialize;
 use serde_json::Value;
 use serde_json::json;
 use std::collections::HashMap;
-use std::env;
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about)]
@@ -86,9 +85,9 @@ struct QueryArgs {
     #[clap(long, default_value = "10")]
     limit: u32,
 
-    /// Path to a custom .env file
+    /// Path to a custom config.toml file
     #[clap(long)]
-    env_file: Option<PathBuf>,
+    config_file: Option<PathBuf>,
 }
 
 #[derive(Args, Debug)]
@@ -308,6 +307,18 @@ struct JiraAgileSprint {
     start_date: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct AppConfig {
+    jira: JiraConfig,
+}
+
+#[derive(Debug, Deserialize)]
+struct JiraConfig {
+    base_url: String,
+    api_token: String,
+    user_email: String,
+}
+
 fn main() -> Result<()> {
     let args = Cli::parse();
 
@@ -315,28 +326,18 @@ fn main() -> Result<()> {
         validate_since_date(since)?;
     }
 
-    // Load environment variables from multiple locations
-    load_environment_variables(&args.query);
+    let config = load_configuration(&args.query)?;
 
-    // Get Jira API credentials from environment
-    let jira_base_url = env::var("JIRA_BASE_URL")
-        .context("JIRA_BASE_URL not set. Set it in a .env file or as an environment variable")?;
-    let jira_api_token = env::var("JIRA_API_TOKEN")
-        .context("JIRA_API_TOKEN not set. Set it in a .env file or as an environment variable")?;
-    let jira_user_email = env::var("JIRA_USER_EMAIL")
-        .context("JIRA_USER_EMAIL not set. Set it in a .env file or as an environment variable")?;
-
-    // Create HTTP client for JIRA API
-    let client = create_jira_client(&jira_user_email, &jira_api_token)?;
+    let client = create_jira_client(&config.user_email, &config.api_token)?;
 
     match args.command {
         Some(Commands::Create(create_args)) => {
-            run_create_issue_command(&client, &jira_base_url, &create_args)
+            run_create_issue_command(&client, &config.base_url, &create_args)
         }
         Some(Commands::Edit(edit_args)) => {
-            run_edit_issue_command(&client, &jira_base_url, &edit_args)
+            run_edit_issue_command(&client, &config.base_url, &edit_args)
         }
-        None => run_query_mode(&client, &jira_base_url, args.query),
+        None => run_query_mode(&client, &config.base_url, args.query),
     }
 }
 
@@ -434,54 +435,62 @@ fn run_query_mode(client: &Client, jira_base_url: &str, args: QueryArgs) -> Resu
     Ok(())
 }
 
-/// Attempts to load environment variables from multiple locations in order:
-/// 1. Custom env file passed as an argument
-/// 2. Current directory .env
-/// 3. User's home directory ~/.config/jit/.env
-fn load_environment_variables(args: &QueryArgs) {
-    // First try user-specified env file if provided
-    if let Some(env_path) = &args.env_file {
-        if env_path.exists() {
-            dotenv::from_path(env_path).ok();
-            return;
-        } else {
-            eprintln!("Warning: Specified .env file not found at: {:?}", env_path);
+/// Attempts to load configuration from multiple locations in order:
+/// 1. Custom config file passed as an argument
+/// 2. Current directory config.toml
+/// 3. User config directory ~/.config/jit/config.toml
+fn load_configuration(args: &QueryArgs) -> Result<JiraConfig> {
+    let config_path = resolve_config_path(args)?;
+    read_config_file(&config_path)
+}
+
+fn resolve_config_path(args: &QueryArgs) -> Result<PathBuf> {
+    if let Some(config_path) = &args.config_file {
+        if config_path.exists() {
+            return Ok(config_path.clone());
         }
+
+        return Err(anyhow!(
+            "Specified config.toml file not found at: {}",
+            config_path.display()
+        ));
     }
 
-    // Try the current directory
-    dotenv().ok();
-
-    // If the vars aren't set yet, try in the home directory
-    if env::var("JIRA_BASE_URL").is_err()
-        || env::var("JIRA_API_TOKEN").is_err()
-        || env::var("JIRA_USER_EMAIL").is_err()
-    {
-        if let Some(home_dir) = dirs::home_dir() {
-            let config_dir = home_dir.join(".config").join("jit");
-            let home_env_path = config_dir.join(".env");
-
-            if home_env_path.exists() {
-                dotenv::from_path(&home_env_path).ok();
-            } else {
-                // If no config file exists yet, create the directory for future use
-                if !config_dir.exists() {
-                    if let Ok(_) = std::fs::create_dir_all(&config_dir) {
-                        eprintln!(
-                            "No configuration found. Created directory at: {:?}",
-                            config_dir
-                        );
-                        eprintln!(
-                            "Please create a .env file in this directory with your JIRA credentials:"
-                        );
-                        eprintln!("  JIRA_BASE_URL=https://your-company.atlassian.net");
-                        eprintln!("  JIRA_API_TOKEN=your_api_token_here");
-                        eprintln!("  JIRA_USER_EMAIL=your_email@example.com");
-                    }
-                }
-            }
-        }
+    let local_config = PathBuf::from("config.toml");
+    if local_config.exists() {
+        return Ok(local_config);
     }
+
+    if let Some(user_config) = default_config_path() {
+        if user_config.exists() {
+            return Ok(user_config);
+        }
+
+        return Err(anyhow!(
+            "No configuration found. Create `config.toml` in the current directory or at `{}` with:\n[jira]\nbase_url = \"https://your-company.atlassian.net\"\napi_token = \"your_api_token_here\"\nuser_email = \"your_email@example.com\"",
+            user_config.display()
+        ));
+    }
+
+    Err(anyhow!(
+        "No configuration found. Create a `config.toml` file with:\n[jira]\nbase_url = \"https://your-company.atlassian.net\"\napi_token = \"your_api_token_here\"\nuser_email = \"your_email@example.com\""
+    ))
+}
+
+fn default_config_path() -> Option<PathBuf> {
+    dirs::config_dir().map(|path| path.join("jit").join("config.toml"))
+}
+
+fn read_config_file(path: &Path) -> Result<JiraConfig> {
+    let contents = fs::read_to_string(path)
+        .with_context(|| format!("Failed to read config file at {}", path.display()))?;
+    let config: AppConfig = toml::from_str(&contents).with_context(|| {
+        format!(
+            "Failed to parse config file at {}. Expected:\n[jira]\nbase_url = \"https://your-company.atlassian.net\"\napi_token = \"your_api_token_here\"\nuser_email = \"your_email@example.com\"",
+            path.display()
+        )
+    })?;
+    Ok(config.jira)
 }
 
 fn run_create_issue_command(client: &Client, jira_base_url: &str, args: &CreateArgs) -> Result<()> {
@@ -1593,7 +1602,10 @@ fn render_adf_node(node: &Value, result: &mut String) {
             }
         }
         "text" => {
-            let text = node.get("text").and_then(|t| t.as_str()).unwrap_or_default();
+            let text = node
+                .get("text")
+                .and_then(|t| t.as_str())
+                .unwrap_or_default();
             result.push_str(text);
 
             if let Some(href) = node
@@ -2133,11 +2145,12 @@ fn display_detailed_ticket(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::sync::mpsc;
     use std::thread;
-    use std::time::Duration;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     #[test]
     fn cli_parses_create_command() {
@@ -2205,6 +2218,146 @@ mod tests {
             }
             _ => panic!("expected edit command"),
         }
+    }
+
+    #[test]
+    fn cli_parses_config_file_flag() {
+        let cli = Cli::try_parse_from(["jit", "--config-file", "/tmp/jit-config.toml", "RW-123"])
+            .expect("config file flag should parse");
+
+        assert_eq!(
+            cli.query.config_file,
+            Some(PathBuf::from("/tmp/jit-config.toml"))
+        );
+        assert_eq!(cli.query.ticket.as_deref(), Some("RW-123"));
+    }
+
+    #[test]
+    fn read_config_file_loads_jira_credentials_from_toml() {
+        let unique_id = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("jit-config-{unique_id}.toml"));
+
+        fs::write(
+            &path,
+            r#"[jira]
+base_url = "https://example.atlassian.net"
+api_token = "token-123"
+user_email = "user@example.com"
+"#,
+        )
+        .expect("temp config should be written");
+
+        let config = read_config_file(&path).expect("config should parse");
+        fs::remove_file(&path).expect("temp config should be removed");
+
+        assert_eq!(config.base_url, "https://example.atlassian.net");
+        assert_eq!(config.api_token, "token-123");
+        assert_eq!(config.user_email, "user@example.com");
+    }
+
+    #[test]
+    fn extract_ticket_id_accepts_plain_ticket_keys() {
+        let ticket = extract_ticket_id("RW-123").expect("plain ticket keys should be accepted");
+
+        assert_eq!(ticket, "RW-123");
+    }
+
+    #[test]
+    fn extract_ticket_id_extracts_ticket_from_browse_url() {
+        let ticket = extract_ticket_id("https://example.atlassian.net/browse/RW-123/")
+            .expect("browse URLs should parse");
+
+        assert_eq!(ticket, "RW-123");
+    }
+
+    #[test]
+    fn extract_ticket_id_rejects_invalid_jira_urls() {
+        let error = extract_ticket_id("https://example.atlassian.net/issues/RW-123")
+            .expect_err("non-browse URLs should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("Could not extract ticket ID from URL")
+        );
+    }
+
+    #[test]
+    fn validate_since_date_accepts_yyyy_mm_dd_dates() {
+        validate_since_date("2026-04-22").expect("valid dates should pass");
+    }
+
+    #[test]
+    fn validate_since_date_rejects_invalid_date_format() {
+        let error =
+            validate_since_date("22-04-2026").expect_err("invalid date formats should fail");
+
+        assert!(error.to_string().contains("Use YYYY-MM-DD"));
+    }
+
+    #[test]
+    fn resolve_config_path_prefers_explicit_config_file() {
+        let unique_id = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("jit-config-path-{unique_id}.toml"));
+        fs::write(&path, "[jira]\nbase_url = \"https://example.atlassian.net\"\napi_token = \"token\"\nuser_email = \"user@example.com\"\n")
+            .expect("temp config should be written");
+
+        let args = QueryArgs {
+            ticket: None,
+            json: false,
+            text: false,
+            my_tickets: false,
+            show: false,
+            include_description: false,
+            include_comments: false,
+            include_prs: false,
+            full: false,
+            comments_limit: 5,
+            all_comments: false,
+            since: None,
+            limit: 10,
+            config_file: Some(path.clone()),
+        };
+
+        let resolved = resolve_config_path(&args).expect("explicit config file should resolve");
+        fs::remove_file(&path).expect("temp config should be removed");
+
+        assert_eq!(resolved, path);
+    }
+
+    #[test]
+    fn resolve_config_path_errors_for_missing_explicit_config_file() {
+        let args = QueryArgs {
+            ticket: None,
+            json: false,
+            text: false,
+            my_tickets: false,
+            show: false,
+            include_description: false,
+            include_comments: false,
+            include_prs: false,
+            full: false,
+            comments_limit: 5,
+            all_comments: false,
+            since: None,
+            limit: 10,
+            config_file: Some(PathBuf::from("/tmp/definitely-missing-jit-config.toml")),
+        };
+
+        let error =
+            resolve_config_path(&args).expect_err("missing explicit config should return an error");
+
+        assert!(
+            error
+                .to_string()
+                .contains("Specified config.toml file not found")
+        );
     }
 
     #[test]
@@ -2280,6 +2433,25 @@ mod tests {
             payload["fields"]["description"]["content"][0]["content"][2]["text"],
             "Second line"
         );
+    }
+
+    #[test]
+    fn build_issue_create_payload_skips_blank_description_and_unassigned_assignee() {
+        let args = CreateArgs {
+            project: "RW".to_string(),
+            summary: "Implement backlog creation".to_string(),
+            description: Some("   ".to_string()),
+            issue_type: "Task".to_string(),
+            assignee: "unassigned".to_string(),
+            current_sprint: false,
+            board: None,
+            json: false,
+        };
+
+        let payload = build_issue_create_payload(&args, None);
+
+        assert!(payload["fields"].get("description").is_none());
+        assert!(payload["fields"].get("assignee").is_none());
     }
 
     #[test]
@@ -2454,6 +2626,39 @@ mod tests {
     }
 
     #[test]
+    fn resolve_create_assignee_keeps_explicit_account_id() {
+        let assignee = resolve_create_assignee(
+            &create_jira_client("user@example.com", "token").expect("client"),
+            "http://127.0.0.1:9",
+            "account-id-123",
+        )
+        .expect("explicit account ids should be returned as-is");
+
+        assert_eq!(assignee.account_id.as_deref(), Some("account-id-123"));
+        assert_eq!(assignee.label, "account-id-123");
+    }
+
+    #[test]
+    fn fetch_current_user_assignee_uses_fallback_label_when_display_name_missing() {
+        let (base_url, requests, handle) = spawn_test_server(
+            "HTTP/1.1 200 OK",
+            r#"{"accountId":"account-id-999","displayName":""}"#,
+        );
+        let client = create_jira_client("user@example.com", "token").expect("client");
+
+        let assignee =
+            fetch_current_user_assignee(&client, &base_url).expect("current user should resolve");
+        let request = requests
+            .recv_timeout(Duration::from_secs(2))
+            .expect("request should be captured");
+        handle.join().expect("server thread should finish");
+
+        assert_eq!(assignee.account_id.as_deref(), Some("account-id-999"));
+        assert_eq!(assignee.label, "Current user");
+        assert!(request.starts_with("GET /rest/api/3/myself HTTP/1.1"));
+    }
+
+    #[test]
     fn resolve_target_sprint_uses_latest_active_sprint_across_project_boards() {
         let (base_url, requests, handle) = spawn_sequence_server(vec![
             (
@@ -2494,6 +2699,424 @@ mod tests {
         assert!(requests[0].starts_with("GET /rest/agile/1.0/board?projectKeyOrId=RW&type=scrum"));
         assert!(requests[1].starts_with("GET /rest/agile/1.0/board/10/sprint?state=active"));
         assert!(requests[2].starts_with("GET /rest/agile/1.0/board/20/sprint?state=active"));
+    }
+
+    #[test]
+    fn resolve_target_sprint_returns_none_when_current_sprint_not_requested() {
+        let client = create_jira_client("user@example.com", "token").expect("client");
+        let args = CreateArgs {
+            project: "RW".to_string(),
+            summary: "Implement backlog creation".to_string(),
+            description: None,
+            issue_type: "Task".to_string(),
+            assignee: "me".to_string(),
+            current_sprint: false,
+            board: None,
+            json: false,
+        };
+
+        let sprint = resolve_target_sprint(&client, "http://127.0.0.1:9", &args)
+            .expect("sprint lookup should be skipped");
+
+        assert!(sprint.is_none());
+    }
+
+    #[test]
+    fn resolve_target_sprint_uses_explicit_board_when_provided() {
+        let (base_url, requests, handle) = spawn_sequence_server(vec![
+            ("HTTP/1.1 200 OK", r#"{"id":42,"name":"Explicit board"}"#),
+            (
+                "HTTP/1.1 200 OK",
+                r#"{"values":[{"id":300,"name":"Board Sprint","startDate":"2026-04-01T09:00:00+00:00"}],"isLast":true,"maxResults":50,"startAt":0}"#,
+            ),
+        ]);
+        let client = create_jira_client("user@example.com", "token").expect("client");
+        let args = CreateArgs {
+            project: "RW".to_string(),
+            summary: "Implement backlog creation".to_string(),
+            description: None,
+            issue_type: "Task".to_string(),
+            assignee: "me".to_string(),
+            current_sprint: true,
+            board: Some(42),
+            json: false,
+        };
+
+        let sprint = resolve_target_sprint(&client, &base_url, &args)
+            .expect("sprint should resolve")
+            .expect("sprint should be present");
+        let requests = collect_requests(requests, 2);
+        handle.join().expect("server thread should finish");
+
+        assert_eq!(sprint.id, 300);
+        assert_eq!(sprint.board_id, 42);
+        assert_eq!(sprint.board_name, "Explicit board");
+        assert!(requests[0].starts_with("GET /rest/agile/1.0/board/42 HTTP/1.1"));
+        assert!(requests[1].starts_with("GET /rest/agile/1.0/board/42/sprint?state=active"));
+    }
+
+    #[test]
+    fn fetch_scrum_boards_for_project_reads_all_pages() {
+        let (base_url, requests, handle) = spawn_sequence_server(vec![
+            (
+                "HTTP/1.1 200 OK",
+                r#"{"values":[{"id":10,"name":"Alpha board"}],"isLast":false,"maxResults":1,"startAt":0}"#,
+            ),
+            (
+                "HTTP/1.1 200 OK",
+                r#"{"values":[{"id":20,"name":"Beta board"}],"isLast":true,"maxResults":1,"startAt":1}"#,
+            ),
+        ]);
+        let client = create_jira_client("user@example.com", "token").expect("client");
+
+        let boards = fetch_scrum_boards_for_project(&client, &base_url, "RW")
+            .expect("board pagination should succeed");
+        let requests = collect_requests(requests, 2);
+        handle.join().expect("server thread should finish");
+
+        assert_eq!(boards.len(), 2);
+        assert_eq!(boards[0].id, 10);
+        assert_eq!(boards[1].id, 20);
+        assert!(requests[0].contains("startAt=0&maxResults=50"));
+        assert!(requests[1].contains("startAt=1&maxResults=50"));
+    }
+
+    #[test]
+    fn fetch_active_sprints_for_board_prefers_latest_active_sprint_across_pages() {
+        let (base_url, requests, handle) = spawn_sequence_server(vec![
+            (
+                "HTTP/1.1 200 OK",
+                r#"{"values":[{"id":100,"name":"Alpha Sprint","startDate":"2026-03-01T09:00:00+00:00"}],"isLast":false,"maxResults":1,"startAt":0}"#,
+            ),
+            (
+                "HTTP/1.1 200 OK",
+                r#"{"values":[{"id":200,"name":"Beta Sprint","startDate":"2026-03-05T09:00:00+00:00"}],"isLast":true,"maxResults":1,"startAt":1}"#,
+            ),
+        ]);
+        let client = create_jira_client("user@example.com", "token").expect("client");
+
+        let sprint = fetch_active_sprints_for_board(&client, &base_url, 42)
+            .expect("sprint pagination should succeed")
+            .expect("a sprint should be returned");
+        let requests = collect_requests(requests, 2);
+        handle.join().expect("server thread should finish");
+
+        assert_eq!(sprint.id, 200);
+        assert_eq!(sprint.name, "Beta Sprint");
+        assert!(requests[0].contains("/board/42/sprint?state=active&startAt=0"));
+        assert!(requests[1].contains("/board/42/sprint?state=active&startAt=1"));
+    }
+
+    #[test]
+    fn compare_sprint_identity_prefers_newer_dates_then_ids() {
+        assert!(compare_sprint_identity(
+            Some("2026-04-10T09:00:00+00:00"),
+            10,
+            1,
+            Some("2026-04-09T09:00:00+00:00"),
+            99,
+            2,
+        ));
+        assert!(compare_sprint_identity(
+            Some("2026-04-10T09:00:00+00:00"),
+            10,
+            2,
+            Some("2026-04-10T09:00:00+00:00"),
+            10,
+            1,
+        ));
+        assert!(!compare_sprint_identity(
+            None,
+            10,
+            1,
+            Some("2026-04-10T09:00:00+00:00"),
+            5,
+            1,
+        ));
+    }
+
+    #[test]
+    fn parse_jira_datetime_accepts_rfc3339_values() {
+        let parsed = parse_jira_datetime("2026-04-10T09:00:00+00:00")
+            .expect("valid RFC3339 values should parse");
+
+        assert_eq!(parsed.to_rfc3339(), "2026-04-10T09:00:00+00:00");
+    }
+
+    #[test]
+    fn fetch_jira_issue_requests_expected_detail_fields() {
+        let (base_url, requests, handle) = spawn_test_server(
+            "HTTP/1.1 200 OK",
+            r#"{"id":"10001","key":"RW-123","fields":{"summary":"Implement backlog creation","status":{"name":"In Progress"},"customfield_10020":[{"name":"Sprint 42","state":"active"}],"description":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"Hello"}]}]},"comment":{"comments":[{"author":{"displayName":"Cesar Ferreira"},"body":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"Comment body"}]}]},"created":"2026-04-10T09:00:00.000+00:00","updated":"2026-04-10T10:00:00.000+00:00"}]}}}"#,
+        );
+        let client = create_jira_client("user@example.com", "token").expect("client");
+
+        let issue = fetch_jira_issue(&client, &base_url, "RW-123", true, true, true)
+            .expect("issue fetch should succeed");
+        let request = requests
+            .recv_timeout(Duration::from_secs(2))
+            .expect("request should be captured");
+        handle.join().expect("server thread should finish");
+
+        assert_eq!(issue.key, "RW-123");
+        assert!(request.starts_with("GET /rest/api/3/issue/RW-123?fields="));
+        assert!(request.contains("assignee,comment,created,customfield_10020,description,duedate,issuetype,priority,reporter,status,summary,updated"));
+    }
+
+    #[test]
+    fn fetch_my_tickets_posts_active_sprint_jql() {
+        let (base_url, requests, handle) = spawn_test_server(
+            "HTTP/1.1 200 OK",
+            r#"{"issues":[{"id":"10001","key":"RW-123","fields":{"summary":"Implement backlog creation","status":{"name":"In Progress"},"customfield_10020":[{"name":"Sprint 42","state":"active"}]}}]}"#,
+        );
+        let client = create_jira_client("user@example.com", "token").expect("client");
+
+        let issues = fetch_my_tickets(&client, &base_url, 7).expect("ticket fetch should succeed");
+        let request = requests
+            .recv_timeout(Duration::from_secs(2))
+            .expect("request should be captured");
+        handle.join().expect("server thread should finish");
+
+        let body = request
+            .split("\r\n\r\n")
+            .nth(1)
+            .expect("http request should contain a body");
+        let parsed_body: Value =
+            serde_json::from_str(body).expect("request body should be valid json");
+
+        assert_eq!(issues.len(), 1);
+        assert!(request.starts_with("POST /rest/api/3/search/jql HTTP/1.1"));
+        assert_eq!(
+            parsed_body["jql"],
+            "assignee = currentUser() AND sprint in openSprints() ORDER BY updated DESC"
+        );
+        assert_eq!(parsed_body["maxResults"], 7);
+    }
+
+    #[test]
+    fn fetch_issue_pull_requests_flattens_dev_status_response() {
+        let (base_url, requests, handle) = spawn_test_server(
+            "HTTP/1.1 200 OK",
+            r#"{"detail":[{"pullRequests":[{"id":"1","name":"First PR","status":"OPEN","url":"https://github.com/org/repo/pull/1","lastUpdate":"2026-04-10T09:00:00.000+00:00"}]},{"pullRequests":[{"id":"2","name":"Second PR","status":"MERGED","url":"https://github.com/org/repo/pull/2","lastUpdate":"2026-04-10T10:00:00.000+00:00"}]}]}"#,
+        );
+        let client = create_jira_client("user@example.com", "token").expect("client");
+
+        let pull_requests = fetch_issue_pull_requests(&client, &base_url, "10001")
+            .expect("PR fetch should succeed");
+        let request = requests
+            .recv_timeout(Duration::from_secs(2))
+            .expect("request should be captured");
+        handle.join().expect("server thread should finish");
+
+        assert_eq!(pull_requests.len(), 2);
+        assert_eq!(pull_requests[0].name.as_deref(), Some("First PR"));
+        assert_eq!(pull_requests[1].name.as_deref(), Some("Second PR"));
+        assert!(request.starts_with("GET /rest/dev-status/latest/issue/detail?issueId=10001"));
+    }
+
+    #[test]
+    fn fetch_pull_requests_for_tickets_maps_results_by_ticket_key() {
+        let (base_url, requests, handle) = spawn_sequence_server(vec![
+            (
+                "HTTP/1.1 200 OK",
+                r#"{"detail":[{"pullRequests":[{"id":"1","name":"First PR","status":"OPEN","url":"https://github.com/org/repo/pull/1","lastUpdate":"2026-04-10T09:00:00.000+00:00"}]}]}"#,
+            ),
+            (
+                "HTTP/1.1 200 OK",
+                r#"{"detail":[{"pullRequests":[{"id":"2","name":"Second PR","status":"MERGED","url":"https://github.com/org/repo/pull/2","lastUpdate":"2026-04-10T10:00:00.000+00:00"}]}]}"#,
+            ),
+        ]);
+        let client = create_jira_client("user@example.com", "token").expect("client");
+        let tickets = vec![
+            sample_issue_with_summary("10001", "RW-123", "First issue"),
+            sample_issue_with_summary("10002", "RW-124", "Second issue"),
+        ];
+
+        let mapped = fetch_pull_requests_for_tickets(&client, &base_url, &tickets)
+            .expect("PR mapping should succeed");
+        let requests = collect_requests(requests, 2);
+        handle.join().expect("server thread should finish");
+
+        assert_eq!(mapped["RW-123"].len(), 1);
+        assert_eq!(mapped["RW-124"].len(), 1);
+        assert!(requests[0].contains("issueId=10001"));
+        assert!(requests[1].contains("issueId=10002"));
+    }
+
+    #[test]
+    fn truncate_with_ellipsis_shortens_long_strings() {
+        let truncated = truncate_with_ellipsis("abcdefghijklmnopqrstuvwxyz", 10);
+
+        assert_eq!(truncated, "abcdefg...");
+    }
+
+    #[test]
+    fn extract_pr_id_from_url_returns_pull_number() {
+        let pr_id = extract_pr_id_from_url("https://github.com/org/repo/pull/123/files");
+
+        assert_eq!(pr_id.as_deref(), Some("#123"));
+    }
+
+    #[test]
+    fn pull_request_display_id_falls_back_to_pull_number_and_default_label() {
+        let from_url = JiraPullRequest {
+            id: None,
+            name: Some("PR from URL".to_string()),
+            status: None,
+            url: Some("https://github.com/org/repo/pull/123".to_string()),
+            last_update: None,
+        };
+        let fallback = JiraPullRequest {
+            id: None,
+            name: Some("No metadata".to_string()),
+            status: None,
+            url: None,
+            last_update: None,
+        };
+
+        assert_eq!(pull_request_display_id(&from_url), "#123");
+        assert_eq!(pull_request_display_id(&fallback), "PR");
+    }
+
+    #[test]
+    fn format_pull_request_summary_limits_output_to_three_entries() {
+        let prs = vec![
+            JiraPullRequest {
+                id: Some("#1".to_string()),
+                name: None,
+                status: None,
+                url: None,
+                last_update: None,
+            },
+            JiraPullRequest {
+                id: Some("#2".to_string()),
+                name: None,
+                status: None,
+                url: None,
+                last_update: None,
+            },
+            JiraPullRequest {
+                id: Some("#3".to_string()),
+                name: None,
+                status: None,
+                url: None,
+                last_update: None,
+            },
+            JiraPullRequest {
+                id: Some("#4".to_string()),
+                name: None,
+                status: None,
+                url: None,
+                last_update: None,
+            },
+        ];
+
+        assert_eq!(format_pull_request_summary(&prs), "#1, #2, #3 +1");
+    }
+
+    #[test]
+    fn format_date_returns_iso_date_or_not_set() {
+        assert_eq!(format_date("2026-04-10T09:00:00.000+00:00"), "2026-04-10");
+        assert_eq!(format_date(""), "Not set");
+    }
+
+    #[test]
+    fn text_to_adf_preserves_paragraphs_and_line_breaks() {
+        let adf = text_to_adf("First line\nSecond line\n\nNew paragraph");
+
+        assert_eq!(adf["content"][0]["content"][0]["text"], "First line");
+        assert_eq!(adf["content"][0]["content"][1]["type"], "hardBreak");
+        assert_eq!(adf["content"][0]["content"][2]["text"], "Second line");
+        assert_eq!(adf["content"][1]["content"][0]["text"], "New paragraph");
+    }
+
+    #[test]
+    fn get_filtered_comments_applies_since_and_limit_filters() {
+        let issue = sample_issue_with_comments(vec![
+            sample_comment("Ada", "2026-04-01T09:00:00.000+00:00", "Old"),
+            sample_comment("Grace", "2026-04-10T09:00:00.000+00:00", "Keep me"),
+            sample_comment("Linus", "2026-04-12T09:00:00.000+00:00", "Newest"),
+        ]);
+
+        let comments = get_filtered_comments(&issue, Some("2026-04-05"), 1, false);
+
+        assert_eq!(comments.len(), 1);
+        assert_eq!(
+            comments[0]
+                .author
+                .as_ref()
+                .map(|author| author.display_name.as_str()),
+            Some("Linus")
+        );
+    }
+
+    #[test]
+    fn build_issue_json_includes_description_comments_and_prs() {
+        let issue = JiraIssue {
+            id: "10001".to_string(),
+            key: "RW-123".to_string(),
+            fields: JiraIssueFields {
+                summary: "Implement backlog creation".to_string(),
+                status: Some(JiraStatus {
+                    name: "In Progress".to_string(),
+                }),
+                sprint: Some(vec![JiraSprint {
+                    name: "Sprint 42".to_string(),
+                    state: "active".to_string(),
+                }]),
+                description: Some(text_to_adf("Hello\nWorld")),
+                assignee: Some(JiraUser {
+                    display_name: "Cesar Ferreira".to_string(),
+                    account_id: Some("account-id-123".to_string()),
+                }),
+                reporter: Some(JiraUser {
+                    display_name: "Ada Lovelace".to_string(),
+                    account_id: Some("account-id-999".to_string()),
+                }),
+                priority: Some(JiraPriority {
+                    name: "High".to_string(),
+                }),
+                issuetype: Some(JiraIssueType {
+                    name: "Task".to_string(),
+                }),
+                created: Some("2026-04-10T09:00:00.000+00:00".to_string()),
+                updated: Some("2026-04-10T10:00:00.000+00:00".to_string()),
+                due_date: Some("2026-04-15".to_string()),
+                comment: Some(JiraCommentContainer {
+                    comments: vec![
+                        sample_comment("Ada", "2026-04-01T09:00:00.000+00:00", "Old"),
+                        sample_comment("Grace", "2026-04-12T09:00:00.000+00:00", "Keep me"),
+                    ],
+                }),
+            },
+        };
+        let pull_requests = vec![JiraPullRequest {
+            id: None,
+            name: Some("Implement release workflow".to_string()),
+            status: Some("OPEN".to_string()),
+            url: Some("https://github.com/org/repo/pull/42".to_string()),
+            last_update: Some("2026-04-10T11:00:00.000+00:00".to_string()),
+        }];
+
+        let payload = build_issue_json(
+            &issue,
+            true,
+            true,
+            true,
+            &pull_requests,
+            5,
+            false,
+            Some("2026-04-05"),
+        );
+
+        assert_eq!(payload["ticket"], "RW-123");
+        assert_eq!(payload["description"], "Hello\nWorld");
+        assert_eq!(payload["comments_returned"], 1);
+        assert_eq!(payload["comments_limit"], 5);
+        assert_eq!(payload["comments_since"], "2026-04-05");
+        assert_eq!(payload["comments"][0]["author"], "Grace");
+        assert_eq!(payload["pull_requests_count"], 1);
+        assert_eq!(payload["pull_requests"][0]["id"], "#42");
     }
 
     #[test]
@@ -2588,6 +3211,67 @@ mod tests {
                     .expect("request should be captured")
             })
             .collect()
+    }
+
+    fn sample_issue_with_summary(id: &str, key: &str, summary: &str) -> JiraIssue {
+        JiraIssue {
+            id: id.to_string(),
+            key: key.to_string(),
+            fields: JiraIssueFields {
+                summary: summary.to_string(),
+                status: Some(JiraStatus {
+                    name: "In Progress".to_string(),
+                }),
+                sprint: Some(vec![JiraSprint {
+                    name: "Sprint 42".to_string(),
+                    state: "active".to_string(),
+                }]),
+                description: None,
+                assignee: None,
+                reporter: None,
+                priority: None,
+                issuetype: None,
+                created: None,
+                updated: None,
+                due_date: None,
+                comment: None,
+            },
+        }
+    }
+
+    fn sample_comment(author: &str, created: &str, body: &str) -> JiraComment {
+        JiraComment {
+            author: Some(JiraUser {
+                display_name: author.to_string(),
+                account_id: None,
+            }),
+            body: Some(text_to_adf(body)),
+            created: Some(created.to_string()),
+            updated: Some(created.to_string()),
+        }
+    }
+
+    fn sample_issue_with_comments(comments: Vec<JiraComment>) -> JiraIssue {
+        JiraIssue {
+            id: "10001".to_string(),
+            key: "RW-123".to_string(),
+            fields: JiraIssueFields {
+                summary: "Implement backlog creation".to_string(),
+                status: Some(JiraStatus {
+                    name: "In Progress".to_string(),
+                }),
+                sprint: None,
+                description: None,
+                assignee: None,
+                reporter: None,
+                priority: None,
+                issuetype: None,
+                created: None,
+                updated: None,
+                due_date: None,
+                comment: Some(JiraCommentContainer { comments }),
+            },
+        }
     }
 
     fn read_http_request(stream: &mut std::net::TcpStream) -> String {

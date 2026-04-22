@@ -98,14 +98,15 @@ cargo build --release
 
 ## Quickstart
 
-Create `~/.config/jit/.env`:
+Create `~/.config/jit/config.toml`:
 
 ```bash
 mkdir -p ~/.config/jit
-cat > ~/.config/jit/.env <<'EOF'
-JIRA_BASE_URL=https://your-company.atlassian.net
-JIRA_API_TOKEN=your_api_token_here
-JIRA_USER_EMAIL=your_email@example.com
+cat > ~/.config/jit/config.toml <<'EOF'
+[jira]
+base_url = "https://your-company.atlassian.net"
+api_token = "your_api_token_here"
+user_email = "your_email@example.com"
 EOF
 ```
 
@@ -459,13 +460,13 @@ URL:      https://your-company.atlassian.net/browse/RW-123
 
 `jit edit` updates only the fields you pass. It works for Task issues as well as other Jira issue types. `--description ''` clears the description, and `--assignee unassigned` clears the assignee.
 
-### Use a specific env file
+### Use a specific config file
 
 ```bash
-jit --env-file /path/to/.env ISSUE-123
-jit --env-file /path/to/.env --my-tickets
-jit --env-file /path/to/.env create --project RW --summary "Improve ticket creation flow"
-jit --env-file /path/to/.env edit RW-123 --summary "Improve edit flow"
+jit --config-file /path/to/config.toml ISSUE-123
+jit --config-file /path/to/config.toml --my-tickets
+jit --config-file /path/to/config.toml create --project RW --summary "Improve ticket creation flow"
+jit --config-file /path/to/config.toml edit RW-123 --summary "Improve edit flow"
 ```
 
 ## Commands
@@ -481,23 +482,23 @@ jit --env-file /path/to/.env edit RW-123 --summary "Improve edit flow"
 | `jit create ...` | Create a Jira issue, backlog by default |
 | `jit create --current-sprint ...` | Create an issue and add it to the active sprint |
 | `jit edit ...` | Update summary, description, type, or assignee |
-| `jit --env-file /path/to/.env ...` | Use a specific credentials file |
+| `jit --config-file /path/to/config.toml ...` | Use a specific config file |
 
 ## Configuration
 
 `jit` looks for Jira credentials in this order:
 
-1. `--env-file <path>`
-2. `.env` in the current directory
-3. `~/.config/jit/.env`
-4. Environment variables already set in your shell
+1. `--config-file <path>`
+2. `config.toml` in the current directory
+3. `~/.config/jit/config.toml`
 
 Example config:
 
-```bash
-JIRA_BASE_URL=https://your-company.atlassian.net
-JIRA_API_TOKEN=your_api_token_here
-JIRA_USER_EMAIL=your_email@example.com
+```toml
+[jira]
+base_url = "https://your-company.atlassian.net"
+api_token = "your_api_token_here"
+user_email = "your_email@example.com"
 ```
 
 ## Development
@@ -521,7 +522,7 @@ Get an Atlassian API token:
 1. Go to `https://id.atlassian.com/manage-profile/security/api-tokens`
 2. Click `Create API token`
 3. Name it
-4. Copy it into `~/.config/jit/.env`
+4. Copy it into `~/.config/jit/config.toml` under the `[jira]` section
 
 ## License
 
