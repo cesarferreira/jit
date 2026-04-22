@@ -1,6 +1,6 @@
 # jit
 
-A fast Jira CLI for ticket lookup, detailed issue inspection, sprint views, and creating or editing issues from the terminal.
+Jira CLI for ticket lookup, detailed issue inspection, sprint views, and creating or editing issues from the terminal.
 
 [![Crates.io](https://img.shields.io/crates/v/jit-cli.svg)](https://crates.io/crates/jit-cli)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -11,29 +11,77 @@ A fast Jira CLI for ticket lookup, detailed issue inspection, sprint views, and 
 
 ---
 
-## Why jit
+## Quick Examples
 
-Jira is useful, but the web UI is slow for the workflows you repeat all day.
+```bash
+# summary
+jit ISSUE-123
+```
 
-`jit` keeps the common paths in the terminal:
+```text
+Ticket:   ISSUE-123
+Summary:  Fix the login button in Safari
+```
 
-- Look up a ticket by key or Jira URL.
-- Switch between human-readable, compact, JSON, and full table output.
-- Pull descriptions, comments, timestamps, and linked pull requests when you need more context.
-- List your current sprint tickets without opening Jira.
-- Create backlog tickets or add new issues directly to the current sprint.
-- Edit existing issues and tasks in place.
-- Reuse the same workflow from shell scripts, Codex skills, and Claude Code skills.
+```bash
+# one-line output
+jit --text ISSUE-123
+```
+
+```text
+ISSUE-123: Fix the login button in Safari
+```
+
+```bash
+# json
+jit --json ISSUE-123
+```
+
+```json
+{"ticket":"ISSUE-123","summary":"Fix the login button in Safari"}
+```
+
+```bash
+# full table
+jit --show --full ISSUE-123
+```
+
+```text
+TICKET DETAILS
+
+ISSUE-123: Fix the login button in Safari
+
+Type:       Bug                  Priority:   Medium
+Status:     In Progress          Sprint:     Development Sprint 27
+Assignee:   John Doe             Reporter:   Jane Smith
+Created:    2023-09-15           Updated:    2023-09-16
+Due Date:   2023-09-30
+```
+
+```bash
+# current sprint
+jit --my-tickets --limit 3
+```
+
+```text
+Current Sprint: Development Sprint 27
+
++-----------+----------------------------------+-------------------+
+| Key       | Summary                          | Status            |
++-----------+----------------------------------+-------------------+
+| PROJ-123  | Implement new login page         | In Review         |
++-----------+----------------------------------+-------------------+
+| PROJ-124  | Fix responsiveness on dashboard  | In Progress       |
++-----------+----------------------------------+-------------------+
+| PROJ-125  | Update API documentation         | Done              |
++-----------+----------------------------------+-------------------+
+```
 
 ## Install
-
-The shortest path:
 
 ```bash
 cargo install jit-cli
 ```
-
-This installs the `jit` command.
 
 Build from source:
 
@@ -81,19 +129,18 @@ jit edit RW-123 --summary "Refine edit flow"
 
 ## Agent Setup
 
-The repo ships a shared agent skill in [`SKILL.md`](SKILL.md). You can install that file into your local agent toolchain so Codex or Claude Code can use `jit` with the same instructions.
+<details>
+<summary>Install the shared <code>SKILL.md</code> into Codex or Claude Code</summary>
+
+The repo ships a shared agent skill in [`SKILL.md`](SKILL.md).
 
 ### Codex
-
-Install the skill into `~/.codex/skills/jit/SKILL.md`:
 
 ```bash
 mkdir -p ~/.codex/skills/jit
 wget -O ~/.codex/skills/jit/SKILL.md \
   https://raw.githubusercontent.com/cesarferreira/jit/refs/heads/main/SKILL.md
 ```
-
-`curl` fallback:
 
 ```bash
 mkdir -p ~/.codex/skills/jit
@@ -102,24 +149,13 @@ curl -fsSL \
   -o ~/.codex/skills/jit/SKILL.md
 ```
 
-Update an existing install:
-
-```bash
-wget -O ~/.codex/skills/jit/SKILL.md \
-  https://raw.githubusercontent.com/cesarferreira/jit/refs/heads/main/SKILL.md
-```
-
 ### Claude Code
-
-Claude Code supports the same `SKILL.md` layout in `~/.claude/skills/<name>/SKILL.md`.
 
 ```bash
 mkdir -p ~/.claude/skills/jit
 wget -O ~/.claude/skills/jit/SKILL.md \
   https://raw.githubusercontent.com/cesarferreira/jit/refs/heads/main/SKILL.md
 ```
-
-`curl` fallback:
 
 ```bash
 mkdir -p ~/.claude/skills/jit
@@ -128,14 +164,7 @@ curl -fsSL \
   -o ~/.claude/skills/jit/SKILL.md
 ```
 
-Update an existing install:
-
-```bash
-wget -O ~/.claude/skills/jit/SKILL.md \
-  https://raw.githubusercontent.com/cesarferreira/jit/refs/heads/main/SKILL.md
-```
-
-Once installed, ask your agent to use the `jit` skill for Jira ticket lookup, sprint queries, issue creation, or issue editing.
+</details>
 
 ## Examples
 
