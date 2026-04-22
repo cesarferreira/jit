@@ -1,3 +1,5 @@
+<div align="center">
+
 # jit
 
 Jira CLI for ticket lookup, detailed issue inspection, sprint views, and creating or editing issues from the terminal.
@@ -8,6 +10,8 @@ Jira CLI for ticket lookup, detailed issue inspection, sprint views, and creatin
 [Install](#install) · [Quickstart](#quickstart) · [Agent Setup](#agent-setup) · [Examples](#examples) · [Commands](#commands)
 
 ![jit demo](assets/ss-3.png)
+
+</div>
 
 ---
 
