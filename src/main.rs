@@ -1514,47 +1514,209 @@ fn format_date(date_str: &str) -> String {
     date_str.to_string()
 }
 
-/// Extract plain text from Atlassian Document Format (ADF).
+/// Render Atlassian Document Format (ADF) into readable text while preserving links.
 fn extract_plain_text_from_adf(adf: &Value) -> String {
-    // If it's not an object with content, return empty string
-    if !adf.is_object() || adf.get("content").is_none() {
-        return String::new();
-    }
-
     let mut result = String::new();
-
-    // Try to process document content
-    if let Some(content) = adf.get("content").and_then(|c| c.as_array()) {
-        for item in content {
-            // Process nested content
-            process_content_node(item, &mut result);
-            result.push('\n');
-        }
-    }
-
+    render_adf_node(adf, &mut result);
     result
 }
 
-/// Recursively process content nodes in Atlassian Document Format.
-fn process_content_node(node: &Value, result: &mut String) {
-    // Process text nodes
-    if let Some(text) = node.get("text").and_then(|t| t.as_str()) {
-        result.push_str(text);
-    }
+fn render_adf_node(node: &Value, result: &mut String) {
+    let Some(node_type) = node.get("type").and_then(|t| t.as_str()) else {
+        if let Some(content) = node.get("content").and_then(|c| c.as_array()) {
+            for child in content {
+                render_adf_node(child, result);
+            }
+        }
+        return;
+    };
 
-    // Recursively process nested content
-    if let Some(content) = node.get("content").and_then(|c| c.as_array()) {
-        for item in content {
-            process_content_node(item, result);
+    match node_type {
+        "doc" => render_adf_blocks(node, result),
+        "paragraph" | "heading" | "blockquote" | "codeBlock" => {
+            let block = render_adf_inline_content(node);
+            append_block(result, &block);
+        }
+        "bulletList" => render_adf_list(node, result, false),
+        "orderedList" => render_adf_list(node, result, true),
+        "listItem" => result.push_str(render_adf_list_item(node).trim_end()),
+        "rule" => append_block(result, "---"),
+        "hardBreak" => result.push('\n'),
+        "inlineCard" | "blockCard" | "embedCard" => {
+            if let Some(url) = node
+                .get("attrs")
+                .and_then(|attrs| attrs.get("url"))
+                .and_then(|url| url.as_str())
+            {
+                result.push_str(url);
+            }
+        }
+        "mention" => {
+            if let Some(text) = node
+                .get("attrs")
+                .and_then(|attrs| attrs.get("text"))
+                .and_then(|text| text.as_str())
+            {
+                result.push_str(text);
+            }
+        }
+        "emoji" => {
+            if let Some(text) = node
+                .get("attrs")
+                .and_then(|attrs| attrs.get("text"))
+                .and_then(|text| text.as_str())
+                .or_else(|| {
+                    node.get("attrs")
+                        .and_then(|attrs| attrs.get("shortName"))
+                        .and_then(|text| text.as_str())
+                })
+            {
+                result.push_str(text);
+            }
+        }
+        "status" => {
+            if let Some(text) = node
+                .get("attrs")
+                .and_then(|attrs| attrs.get("text"))
+                .and_then(|text| text.as_str())
+            {
+                result.push_str(text);
+            }
+        }
+        "date" => {
+            if let Some(timestamp) = node
+                .get("attrs")
+                .and_then(|attrs| attrs.get("timestamp"))
+                .and_then(|timestamp| timestamp.as_str())
+            {
+                result.push_str(timestamp);
+            }
+        }
+        "text" => {
+            let text = node.get("text").and_then(|t| t.as_str()).unwrap_or_default();
+            result.push_str(text);
 
-            // Add a newline if this is a paragraph or list item
-            if let Some(node_type) = node.get("type").and_then(|t| t.as_str()) {
-                if node_type == "paragraph" || node_type == "listItem" {
-                    result.push('\n');
+            if let Some(href) = node
+                .get("marks")
+                .and_then(|marks| marks.as_array())
+                .and_then(|marks| extract_link_href(marks))
+            {
+                let trimmed_text = text.trim();
+                if !href.is_empty() && trimmed_text != href && !trimmed_text.contains(href) {
+                    result.push_str(" (");
+                    result.push_str(href);
+                    result.push(')');
+                }
+            }
+        }
+        _ => {
+            if let Some(content) = node.get("content").and_then(|c| c.as_array()) {
+                for child in content {
+                    render_adf_node(child, result);
                 }
             }
         }
     }
+}
+
+fn render_adf_blocks(node: &Value, result: &mut String) {
+    if let Some(content) = node.get("content").and_then(|c| c.as_array()) {
+        for child in content {
+            render_adf_node(child, result);
+        }
+    }
+}
+
+fn render_adf_inline_content(node: &Value) -> String {
+    let mut block = String::new();
+    if let Some(content) = node.get("content").and_then(|c| c.as_array()) {
+        for child in content {
+            render_adf_node(child, &mut block);
+        }
+    }
+    block
+}
+
+fn render_adf_list(node: &Value, result: &mut String, ordered: bool) {
+    if let Some(items) = node.get("content").and_then(|c| c.as_array()) {
+        for (index, item) in items.iter().enumerate() {
+            let rendered_item = render_adf_list_item(item);
+            if rendered_item.is_empty() {
+                continue;
+            }
+
+            let prefix = if ordered {
+                format!("{}. ", index + 1)
+            } else {
+                "- ".to_string()
+            };
+
+            let mut lines = rendered_item.lines();
+            if let Some(first_line) = lines.next() {
+                append_block(result, &format!("{prefix}{first_line}"));
+            }
+
+            for line in lines {
+                append_block(result, line);
+            }
+        }
+    }
+}
+
+fn render_adf_list_item(node: &Value) -> String {
+    let mut item = String::new();
+    if let Some(content) = node.get("content").and_then(|c| c.as_array()) {
+        for child in content {
+            match child.get("type").and_then(|t| t.as_str()) {
+                Some("paragraph") | Some("heading") | Some("blockquote") | Some("codeBlock") => {
+                    let block = render_adf_inline_content(child);
+                    if !block.trim().is_empty() {
+                        if !item.is_empty() && !item.ends_with('\n') {
+                            item.push('\n');
+                        }
+                        item.push_str(block.trim_end());
+                    }
+                }
+                Some("bulletList") | Some("orderedList") => {
+                    let mut nested = String::new();
+                    render_adf_node(child, &mut nested);
+                    if !nested.trim().is_empty() {
+                        if !item.is_empty() && !item.ends_with('\n') {
+                            item.push('\n');
+                        }
+                        item.push_str(nested.trim_end());
+                    }
+                }
+                _ => render_adf_node(child, &mut item),
+            }
+        }
+    }
+    item.trim().to_string()
+}
+
+fn append_block(result: &mut String, block: &str) {
+    let block = block.trim_end();
+    if block.is_empty() {
+        return;
+    }
+
+    if !result.is_empty() && !result.ends_with('\n') {
+        result.push('\n');
+    }
+    result.push_str(block);
+    result.push('\n');
+}
+
+fn extract_link_href<'a>(marks: &'a [Value]) -> Option<&'a str> {
+    marks.iter().find_map(|mark| {
+        (mark.get("type").and_then(|t| t.as_str()) == Some("link"))
+            .then(|| {
+                mark.get("attrs")
+                    .and_then(|attrs| attrs.get("href"))
+                    .and_then(|href| href.as_str())
+            })
+            .flatten()
+    })
 }
 
 fn adf_value_to_display_text(value: &Value) -> String {
@@ -2135,6 +2297,55 @@ mod tests {
 
         assert_eq!(payload["fields"]["description"], Value::Null);
         assert_eq!(payload["fields"]["assignee"], Value::Null);
+    }
+
+    #[test]
+    fn adf_value_to_display_text_preserves_inline_links() {
+        let value = json!({
+            "type": "doc",
+            "version": 1,
+            "content": [{
+                "type": "paragraph",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "See docs",
+                        "marks": [{
+                            "type": "link",
+                            "attrs": { "href": "https://example.com/docs" }
+                        }]
+                    }
+                ]
+            }]
+        });
+
+        assert_eq!(
+            adf_value_to_display_text(&value),
+            "See docs (https://example.com/docs)"
+        );
+    }
+
+    #[test]
+    fn adf_value_to_display_text_preserves_smart_links() {
+        let value = json!({
+            "type": "doc",
+            "version": 1,
+            "content": [{
+                "type": "paragraph",
+                "content": [
+                    { "type": "text", "text": "Runbook: " },
+                    {
+                        "type": "inlineCard",
+                        "attrs": { "url": "https://example.com/runbook" }
+                    }
+                ]
+            }]
+        });
+
+        assert_eq!(
+            adf_value_to_display_text(&value),
+            "Runbook: https://example.com/runbook"
+        );
     }
 
     #[test]
