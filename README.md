@@ -1,10 +1,33 @@
-# JIT: JIRA Issue Tool
+# jit
 
-> A Rust CLI tool to fetch Jira ticket summaries, details, comments, sprint tickets, and create or edit Jira issues, including tasks, via the Jira API.
+A fast Jira CLI for ticket lookup, detailed issue inspection, sprint views, and creating or editing issues from the terminal.
 
-![demo](assets/ss-3.png)
+[![Crates.io](https://img.shields.io/crates/v/jit-cli.svg)](https://crates.io/crates/jit-cli)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-## Installation
+[Install](#install) · [Quickstart](#quickstart) · [Agent Setup](#agent-setup) · [Examples](#examples) · [Commands](#commands)
+
+![jit demo](assets/ss-3.png)
+
+---
+
+## Why jit
+
+Jira is useful, but the web UI is slow for the workflows you repeat all day.
+
+`jit` keeps the common paths in the terminal:
+
+- Look up a ticket by key or Jira URL.
+- Switch between human-readable, compact, JSON, and full table output.
+- Pull descriptions, comments, timestamps, and linked pull requests when you need more context.
+- List your current sprint tickets without opening Jira.
+- Create backlog tickets or add new issues directly to the current sprint.
+- Edit existing issues and tasks in place.
+- Reuse the same workflow from shell scripts, Codex skills, and Claude Code skills.
+
+## Install
+
+The shortest path:
 
 ```bash
 cargo install jit-cli
@@ -12,109 +35,175 @@ cargo install jit-cli
 
 This installs the `jit` command.
 
-## Usage
+Build from source:
 
-### Standard output
 ```bash
-# Using a ticket ID
+git clone https://github.com/cesarferreira/jit
+cd jit
+cargo build --release
+./target/release/jit --version
+```
+
+## Quickstart
+
+Create `~/.config/jit/.env`:
+
+```bash
+mkdir -p ~/.config/jit
+cat > ~/.config/jit/.env <<'EOF'
+JIRA_BASE_URL=https://your-company.atlassian.net
+JIRA_API_TOKEN=your_api_token_here
+JIRA_USER_EMAIL=your_email@example.com
+EOF
+```
+
+Then run a few common commands:
+
+```bash
+# Ticket summary
 jit ISSUE-123
 
-# Using a JIRA URL
+# Compact one-line output
+jit --text ISSUE-123
+
+# Full ticket details with comments and PRs
+jit --show --full ISSUE-123
+
+# Current sprint tickets assigned to you
+jit --my-tickets
+
+# Create a backlog ticket
+jit create --project RW --summary "Improve ticket creation flow"
+
+# Edit an existing issue
+jit edit RW-123 --summary "Refine edit flow"
+```
+
+## Agent Setup
+
+The repo ships a shared agent skill in [`SKILL.md`](SKILL.md). You can install that file into your local agent toolchain so Codex or Claude Code can use `jit` with the same instructions.
+
+### Codex
+
+Install the skill into `~/.codex/skills/jit/SKILL.md`:
+
+```bash
+mkdir -p ~/.codex/skills/jit
+wget -O ~/.codex/skills/jit/SKILL.md \
+  https://raw.githubusercontent.com/cesarferreira/jit/refs/heads/main/SKILL.md
+```
+
+`curl` fallback:
+
+```bash
+mkdir -p ~/.codex/skills/jit
+curl -fsSL \
+  https://raw.githubusercontent.com/cesarferreira/jit/refs/heads/main/SKILL.md \
+  -o ~/.codex/skills/jit/SKILL.md
+```
+
+Update an existing install:
+
+```bash
+wget -O ~/.codex/skills/jit/SKILL.md \
+  https://raw.githubusercontent.com/cesarferreira/jit/refs/heads/main/SKILL.md
+```
+
+### Claude Code
+
+Claude Code supports the same `SKILL.md` layout in `~/.claude/skills/<name>/SKILL.md`.
+
+```bash
+mkdir -p ~/.claude/skills/jit
+wget -O ~/.claude/skills/jit/SKILL.md \
+  https://raw.githubusercontent.com/cesarferreira/jit/refs/heads/main/SKILL.md
+```
+
+`curl` fallback:
+
+```bash
+mkdir -p ~/.claude/skills/jit
+curl -fsSL \
+  https://raw.githubusercontent.com/cesarferreira/jit/refs/heads/main/SKILL.md \
+  -o ~/.claude/skills/jit/SKILL.md
+```
+
+Update an existing install:
+
+```bash
+wget -O ~/.claude/skills/jit/SKILL.md \
+  https://raw.githubusercontent.com/cesarferreira/jit/refs/heads/main/SKILL.md
+```
+
+Once installed, ask your agent to use the `jit` skill for Jira ticket lookup, sprint queries, issue creation, or issue editing.
+
+## Examples
+
+### Ticket lookup
+
+Default summary output:
+
+```bash
+jit ISSUE-123
 jit https://your-company.atlassian.net/browse/ISSUE-123
 ```
 
 Example output:
-```
+
+```text
 Ticket:   ISSUE-123
 Summary:  Fix the login button in Safari
 ```
 
-### Text output (compact format)
+Compact output for scripts or quick scanning:
+
 ```bash
 jit --text ISSUE-123
 ```
 
 Example output:
-```
+
+```text
 ISSUE-123: Fix the login button in Safari
 ```
 
-### JSON output
+JSON output:
+
 ```bash
-# Using a ticket ID
 jit --json ISSUE-123
-
-# Using a JIRA URL
 jit --json https://your-company.atlassian.net/browse/ISSUE-123
-
-# Include description, metadata, and recent comments
-jit --json --full ISSUE-123
-
-# Include linked pull requests
-jit --json --include-prs ISSUE-123
-
-# Include comments from a specific date onward
-jit --json --include-comments --since 2026-01-01 ISSUE-123
 ```
 
 Example output:
+
 ```json
 {"ticket":"ISSUE-123","summary":"Fix the login button in Safari"}
 ```
 
-### Detailed Information (Table)
-View detailed information about a ticket in a well-formatted table:
+### Detailed issue views
+
+Show a formatted table:
 
 ```bash
-# Using a ticket ID
 jit --show ISSUE-123
-
-# Using a JIRA URL
 jit --show https://your-company.atlassian.net/browse/ISSUE-123
-
-# Include comments (latest 5 by default)
-jit --show --include-comments ISSUE-123
-
-# Include all comments and description
-jit --show --full --all-comments ISSUE-123
-
-# Include linked pull requests
-jit --show --include-prs ISSUE-123
-
-# Include only comments after a date
-jit --show --include-comments --since 2026-01-01 ISSUE-123
 ```
 
-### Detail and Comment Flags
-Use these flags with `--show` or `--json` when you need more than key+summary:
+Include richer context as needed:
 
 ```bash
-# Include description only
 jit --show --include-description ISSUE-123
-
-# Include comments only (latest 5 by default)
 jit --show --include-comments ISSUE-123
-
-# Include description + comments + metadata/timestamps
-jit --show --full ISSUE-123
-
-# Include pull requests
 jit --show --include-prs ISSUE-123
-
-# Limit number of returned comments
-jit --json --include-comments --comments-limit 3 ISSUE-123
-
-# Return all comments
-jit --json --include-comments --all-comments ISSUE-123
-
-# Filter comments by creation date (inclusive)
-jit --json --include-comments --since 2026-01-01 ISSUE-123
+jit --show --full ISSUE-123
+jit --json --full ISSUE-123
 ```
 
-`--full` is equivalent to combining `--include-description`, `--include-comments`, and `--include-prs` for rich ticket output.
+`--full` is the shortest path when you want description, comments, pull requests, and metadata together.
 
 Example output:
-```
+
+```text
 TICKET DETAILS
 
 ISSUE-123: Fix the login button in Safari
@@ -132,30 +221,57 @@ Steps to reproduce:
 1. Open the login page in Safari
 2. Click on the login button
 3. Nothing happens
-
-Expected: The login form should be submitted.
-Actual: Nothing happens when the button is clicked.
 ```
 
-### Current Sprint Tickets
-View your tickets in the current active sprint:
+### Comments, history, and linked PRs
+
+Limit comments:
 
 ```bash
-# Equivalent default behavior (no args)
+jit --show --include-comments --comments-limit 3 ISSUE-123
+jit --json --include-comments --comments-limit 3 ISSUE-123
+```
+
+Return all comments:
+
+```bash
+jit --show --include-comments --all-comments ISSUE-123
+jit --json --include-comments --all-comments ISSUE-123
+```
+
+Filter comments by date:
+
+```bash
+jit --show --include-comments --since 2026-01-01 ISSUE-123
+jit --json --include-comments --since 2026-01-01 ISSUE-123
+```
+
+Include linked pull requests:
+
+```bash
+jit --show --include-prs ISSUE-123
+jit --json --include-prs ISSUE-123
+```
+
+### Current sprint tickets
+
+No arguments defaults to your current sprint tickets:
+
+```bash
 jit
+```
 
-# View all your tickets in the current sprint
+Explicit forms:
+
+```bash
 jit --my-tickets
-
-# Show sprint tickets with linked PR IDs
 jit --my-tickets --include-prs
-
-# Limit the number of tickets shown
 jit --my-tickets --limit 5
 ```
 
 Example output:
-```
+
+```text
 Current Sprint: Development Sprint 27
 
 +-----------+----------------------------------+-------------------+
@@ -169,47 +285,54 @@ Current Sprint: Development Sprint 27
 +-----------+----------------------------------+-------------------+
 ```
 
-### Create Backlog Tickets
-Create a new issue without sprint assignment so it lands in the backlog on scrum boards:
+### Create backlog tickets
+
+Create a basic backlog task:
 
 ```bash
-# Create a task in the backlog
 jit create --project RW --summary "Improve ticket creation flow"
+```
 
-# Create a story with a plain-text description
+Create with explicit type and description:
+
+```bash
 jit create \
   --project RW \
   --type Story \
   --summary "Support backlog ticket creation" \
   --description $'Add a create command\nCover it with tests'
+```
 
-# Create a bug and assign it to a specific Jira account ID
+Create with a specific assignee:
+
+```bash
 jit create \
   --project RW \
   --type Bug \
   --assignee 5b10a2844c20165700ede21g \
   --summary "Fix backlog create validation"
+```
 
-# Create a story directly in the current sprint
+Leave the ticket unassigned:
+
+```bash
 jit create \
   --project RW \
-  --type Story \
-  --current-sprint \
-  --summary "Deliver current sprint ticket creation"
+  --assignee unassigned \
+  --summary "Triage backlog item without owner yet"
+```
 
-# Create in the current sprint for a specific board
-jit create \
-  --project RW \
-  --current-sprint \
-  --board 123 \
-  --summary "Use the board's active sprint"
+Return the created issue as JSON:
 
-# Return the created issue as JSON
+```bash
 jit create --project RW --summary "Improve ticket creation flow" --json
 ```
 
+By default, `jit create` assigns the issue to the current Jira user with `--assignee me` and leaves it out of a sprint, which is what puts it in the backlog on Scrum boards.
+
 Example output:
-```
+
+```text
 Created:  RW-123
 Project:  RW
 Type:     Task
@@ -219,84 +342,154 @@ Backlog:  Yes (created without sprint assignment)
 URL:      https://your-company.atlassian.net/browse/RW-123
 ```
 
-The command creates the issue through Jira's issue-create API and does not assign it to a sprint unless you pass `--current-sprint`. On Scrum boards, that backlog-by-default behavior is what leaves the issue in the backlog. By default, `jit create` assigns the issue to the current Jira user with `--assignee me`; pass `--assignee <account-id>` to assign someone else, or `--assignee unassigned` to leave it unassigned.
+### Create tickets in the current sprint
 
-When `--current-sprint` is set, `jit` resolves the active sprint from Jira Software and adds the new issue to it after creation. If you pass `--board <id>`, that board is used directly. Otherwise, `jit` looks at accessible Scrum boards for the project and picks the active sprint with the most recent `startDate`. If your Jira project uses custom workflows or board rules, sprint visibility and backlog behavior still depend on that Jira configuration.
-
-### Edit Existing Tickets
-Update an existing Jira ticket, including Task issues, by changing its summary, description, type, or assignee:
+Create directly in the active sprint:
 
 ```bash
-# Update the summary
+jit create \
+  --project RW \
+  --current-sprint \
+  --summary "Deliver current sprint ticket creation"
+```
+
+Target a specific board:
+
+```bash
+jit create \
+  --project RW \
+  --current-sprint \
+  --board 123 \
+  --summary "Use the board's active sprint"
+```
+
+When `--current-sprint` is set, `jit` resolves the active sprint through Jira Software and adds the new issue after creation. If you do not pass `--board`, `jit` checks accessible Scrum boards for the project and uses the active sprint with the most recent `startDate`.
+
+### Edit existing tickets
+
+Update the summary:
+
+```bash
 jit edit RW-123 --summary "Improve edit flow"
+```
 
-# Update the description
+Update the description:
+
+```bash
 jit edit RW-123 --description $'First line\nSecond line'
+```
 
-# Clear the description
+Clear the description:
+
+```bash
 jit edit RW-123 --description ''
+```
 
-# Change issue type and assignee
+Change issue type and assignee:
+
+```bash
 jit edit RW-123 --type Bug --assignee 5b10a2844c20165700ede21g
+```
 
-# Edit a task and keep it typed as Task
+Keep a task as `Task` while updating other fields:
+
+```bash
 jit edit RW-123 --type Task --summary "Refine task summary"
+```
 
-# Unassign the issue
+Unassign the issue:
+
+```bash
 jit edit RW-123 --assignee unassigned
+```
 
-# Use the current Jira user as assignee
+Use the current Jira user as assignee:
+
+```bash
 jit edit RW-123 --assignee me
+```
 
-# Return the update result as JSON
+Return update results as JSON:
+
+```bash
 jit edit RW-123 --summary "Improve edit flow" --json
 ```
 
 Example output:
-```
+
+```text
 Updated:  RW-123
 Fields:   summary
 Summary:  Improve edit flow
 URL:      https://your-company.atlassian.net/browse/RW-123
 ```
 
-`jit edit` updates only the fields you pass. It works for any Jira issue type the API allows, including Task issues. Description values are sent as Atlassian Document Format, `--description ''` clears the description, and `--assignee unassigned` clears the assignee. Like `create`, `--assignee me` resolves to the current Jira user before sending the update.
+`jit edit` updates only the fields you pass. It works for Task issues as well as other Jira issue types. `--description ''` clears the description, and `--assignee unassigned` clears the assignee.
 
+### Use a specific env file
+
+```bash
+jit --env-file /path/to/.env ISSUE-123
+jit --env-file /path/to/.env --my-tickets
+jit --env-file /path/to/.env create --project RW --summary "Improve ticket creation flow"
+jit --env-file /path/to/.env edit RW-123 --summary "Improve edit flow"
+```
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `jit ISSUE-123` | Show ticket summary |
+| `jit --text ISSUE-123` | Show one-line `KEY: Summary` output |
+| `jit --json ISSUE-123` | Return machine-readable JSON |
+| `jit --show ISSUE-123` | Show detailed ticket fields in a table |
+| `jit --show --full ISSUE-123` | Include description, comments, pull requests, and metadata |
+| `jit --my-tickets` | List current sprint tickets assigned to you |
+| `jit create ...` | Create a Jira issue, backlog by default |
+| `jit create --current-sprint ...` | Create an issue and add it to the active sprint |
+| `jit edit ...` | Update summary, description, type, or assignee |
+| `jit --env-file /path/to/.env ...` | Use a specific credentials file |
 
 ## Configuration
 
-The tool looks for JIRA credentials in the following locations (in order):
+`jit` looks for Jira credentials in this order:
 
-1. Custom environment file specified with `--env-file` option
-2. `.env` file in the current directory
-3. `.env` file in `~/.config/jit/` directory
-4. Environment variables set in your shell
+1. `--env-file <path>`
+2. `.env` in the current directory
+3. `~/.config/jit/.env`
+4. Environment variables already set in your shell
 
-When running for the first time, create a `.env` file in your home directory at `~/.config/jit/.env` with:
+Example config:
 
-```
+```bash
 JIRA_BASE_URL=https://your-company.atlassian.net
 JIRA_API_TOKEN=your_api_token_here
 JIRA_USER_EMAIL=your_email@example.com
 ```
 
-With this configuration, you can run the tool from any directory on your system.
+## Development
 
-## Setup
+Run locally:
 
-1. Clone the repository
-2. Create a `.env` file in the root directory with the following variables:
-   ```
-   JIRA_BASE_URL=https://your-company.atlassian.net
-   JIRA_API_TOKEN=your_api_token_here
-   JIRA_USER_EMAIL=your_email@example.com
-   ```
-3. Get a JIRA API token from [Atlassian's API tokens page](https://id.atlassian.com/manage-profile/security/api-tokens)
-4. Run `cargo build --release`
+```bash
+cargo run -- ISSUE-123
+cargo run -- --my-tickets
+cargo run -- create --project RW --summary "Improve ticket creation flow"
+```
 
-## API Token Creation
+Build a release binary:
 
-1. Go to https://id.atlassian.com/manage-profile/security/api-tokens
-2. Click "Create API token"
-3. Give it a name like "JIRA Title CLI"
-4. Copy the token and save it in your `.env` file 
+```bash
+cargo build --release
+```
+
+Get an Atlassian API token:
+
+1. Go to `https://id.atlassian.com/manage-profile/security/api-tokens`
+2. Click `Create API token`
+3. Name it
+4. Copy it into `~/.config/jit/.env`
+
+## License
+
+MIT © Cesar Ferreira
