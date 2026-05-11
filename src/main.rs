@@ -1,7 +1,7 @@
 // src/main.rs
 use anyhow::{Context, Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use chrono::{DateTime, FixedOffset};
+use chrono::{DateTime, FixedOffset, Local};
 use clap::{Args, Parser, Subcommand};
 use colored::*;
 use regex::Regex;
@@ -30,6 +30,8 @@ enum Commands {
     Create(CreateArgs),
     /// Edit an existing Jira ticket's core fields, including Task issues
     Edit(EditArgs),
+    /// Add and inspect Jira worklogs for an issue
+    Worklog(WorklogArgs),
 }
 
 #[derive(Args, Debug)]
@@ -147,6 +149,52 @@ struct EditArgs {
     assignee: Option<String>,
 
     /// Output updated issue details in JSON format
+    #[clap(long)]
+    json: bool,
+}
+
+#[derive(Args, Debug)]
+struct WorklogArgs {
+    #[command(subcommand)]
+    command: WorklogCommands,
+}
+
+#[derive(Subcommand, Debug)]
+enum WorklogCommands {
+    /// Add a manual worklog entry to an issue
+    Add(AddWorklogArgs),
+    /// List visible worklogs for an issue
+    List(ListWorklogArgs),
+}
+
+#[derive(Args, Debug)]
+struct AddWorklogArgs {
+    /// JIRA issue key (e.g., RW-1931) or URL (e.g., https://company.atlassian.net/browse/RW-1931)
+    ticket: String,
+
+    /// Jira-native time spent string (e.g. 30m, 1h, 1h 30m)
+    #[clap(long)]
+    time_spent: String,
+
+    /// Plain-text worklog comment
+    #[clap(long)]
+    comment: Option<String>,
+
+    /// Worklog start timestamp in Jira format
+    #[clap(long)]
+    started: Option<String>,
+
+    /// Output created worklog details in JSON format
+    #[clap(long)]
+    json: bool,
+}
+
+#[derive(Args, Debug)]
+struct ListWorklogArgs {
+    /// JIRA issue key (e.g., RW-1931) or URL (e.g., https://company.atlassian.net/browse/RW-1931)
+    ticket: String,
+
+    /// Output worklogs in JSON format
     #[clap(long)]
     json: bool,
 }
@@ -270,6 +318,33 @@ struct JiraCreatedIssue {
 }
 
 #[derive(Debug, Deserialize)]
+struct JiraWorklogPage {
+    #[serde(rename = "startAt", default)]
+    start_at: usize,
+    #[serde(rename = "maxResults", default)]
+    max_results: usize,
+    #[serde(default)]
+    total: usize,
+    #[serde(default)]
+    worklogs: Vec<JiraWorklog>,
+}
+
+#[derive(Debug, Deserialize)]
+struct JiraWorklog {
+    id: String,
+    #[serde(default)]
+    author: Option<JiraUser>,
+    #[serde(default)]
+    comment: Option<Value>,
+    #[serde(default)]
+    started: Option<String>,
+    #[serde(rename = "timeSpent", default)]
+    time_spent: Option<String>,
+    #[serde(rename = "timeSpentSeconds", default)]
+    time_spent_seconds: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
 struct JiraBoardPage {
     #[serde(default)]
     values: Vec<JiraBoard>,
@@ -336,6 +411,9 @@ fn main() -> Result<()> {
         }
         Some(Commands::Edit(edit_args)) => {
             run_edit_issue_command(&client, &config.base_url, &edit_args)
+        }
+        Some(Commands::Worklog(worklog_args)) => {
+            run_worklog_command(&client, &config.base_url, &worklog_args)
         }
         None => run_query_mode(&client, &config.base_url, args.query),
     }
@@ -651,6 +729,73 @@ fn run_edit_issue_command(client: &Client, jira_base_url: &str, args: &EditArgs)
     Ok(())
 }
 
+fn run_worklog_command(client: &Client, jira_base_url: &str, args: &WorklogArgs) -> Result<()> {
+    match &args.command {
+        WorklogCommands::Add(add_args) => run_add_worklog_command(client, jira_base_url, add_args),
+        WorklogCommands::List(list_args) => {
+            run_list_worklog_command(client, jira_base_url, list_args)
+        }
+    }
+}
+
+fn run_add_worklog_command(
+    client: &Client,
+    jira_base_url: &str,
+    args: &AddWorklogArgs,
+) -> Result<()> {
+    let ticket_id = extract_ticket_id(&args.ticket)?;
+    let started = args.started.clone().unwrap_or_else(current_jira_timestamp);
+    let worklog = create_issue_worklog(
+        client,
+        jira_base_url,
+        &ticket_id,
+        &args.time_spent,
+        &started,
+        args.comment.as_deref(),
+    )?;
+
+    if args.json {
+        println!("{}", build_worklog_json(&ticket_id, &worklog));
+    } else {
+        println!("Added:    {}", ticket_id);
+        println!("Worklog:  {}", worklog.id);
+        println!("Author:   {}", worklog_author_name(&worklog));
+        println!(
+            "Started:  {}",
+            worklog.started.as_deref().unwrap_or(started.as_str())
+        );
+        println!(
+            "Time:     {}",
+            worklog
+                .time_spent
+                .as_deref()
+                .unwrap_or(args.time_spent.as_str())
+        );
+        if let Some(comment) = worklog_comment_text(&worklog) {
+            println!("Comment:  {}", comment);
+        }
+    }
+
+    Ok(())
+}
+
+fn run_list_worklog_command(
+    client: &Client,
+    jira_base_url: &str,
+    args: &ListWorklogArgs,
+) -> Result<()> {
+    let ticket_id = extract_ticket_id(&args.ticket)?;
+    let worklogs = fetch_issue_worklogs(client, jira_base_url, &ticket_id)?;
+
+    if args.json {
+        println!("{}", build_worklog_list_json(&ticket_id, &worklogs));
+    } else {
+        display_worklog_list(&ticket_id, &worklogs);
+    }
+
+    Ok(())
+}
+
 fn extract_ticket_id(input: &str) -> Result<String> {
     // If input starts with http/https, it's a URL
     if input.starts_with("http://") || input.starts_with("https://") {
@@ -841,6 +986,89 @@ fn update_jira_issue(
     }
 
     Ok(())
+}
+
+fn create_issue_worklog(
+    client: &Client,
+    base_url: &str,
+    issue_key: &str,
+    time_spent: &str,
+    started: &str,
+    comment: Option<&str>,
+) -> Result<JiraWorklog> {
+    let url = format!("{}/rest/api/3/issue/{}/worklog", base_url, issue_key);
+    let payload = build_worklog_create_payload(time_spent, started, comment);
+
+    let response = client
+        .post(&url)
+        .json(&payload)
+        .send()
+        .context("Failed to send request to JIRA API")?;
+
+    if !response.status().is_success() {
+        return Err(anyhow!(
+            "JIRA API request failed with status: {} - {}",
+            response.status(),
+            response.text().unwrap_or_default()
+        ));
+    }
+
+    response.json().context("Failed to parse JIRA API response")
+}
+
+fn fetch_issue_worklogs(
+    client: &Client,
+    base_url: &str,
+    issue_key: &str,
+) -> Result<Vec<JiraWorklog>> {
+    let mut start_at = 0usize;
+    let mut worklogs = Vec::new();
+
+    loop {
+        let url = if start_at == 0 {
+            format!("{}/rest/api/3/issue/{}/worklog", base_url, issue_key)
+        } else {
+            format!(
+                "{}/rest/api/3/issue/{}/worklog?startAt={}",
+                base_url, issue_key, start_at
+            )
+        };
+
+        let response = client
+            .get(&url)
+            .send()
+            .context("Failed to send request to JIRA API")?;
+
+        if !response.status().is_success() {
+            return Err(anyhow!(
+                "JIRA API request failed with status: {} - {}",
+                response.status(),
+                response.text().unwrap_or_default()
+            ));
+        }
+
+        let page: JiraWorklogPage = response
+            .json()
+            .context("Failed to parse JIRA API response")?;
+        let fetched = page.worklogs.len();
+        let next_start_at = if page.max_results > 0 {
+            page.start_at + page.max_results
+        } else {
+            page.start_at + fetched
+        };
+        let is_last_page =
+            fetched == 0 || (page.total > 0 && next_start_at >= page.total);
+
+        worklogs.extend(page.worklogs);
+
+        if is_last_page {
+            break;
+        }
+
+        start_at = next_start_at;
+    }
+
+    Ok(worklogs)
 }
 
 fn resolve_create_assignee(
@@ -1223,6 +1451,19 @@ fn build_issue_update_payload(args: &EditArgs, assignee_id: Option<&str>) -> Val
     json!({ "fields": fields })
 }
 
+fn build_worklog_create_payload(time_spent: &str, started: &str, comment: Option<&str>) -> Value {
+    let mut payload = serde_json::Map::from_iter([
+        ("timeSpent".to_string(), json!(time_spent)),
+        ("started".to_string(), json!(started)),
+    ]);
+
+    if let Some(comment) = comment.map(str::trim).filter(|comment| !comment.is_empty()) {
+        payload.insert("comment".to_string(), text_to_adf(comment));
+    }
+
+    Value::Object(payload)
+}
+
 struct ResolvedAssignee {
     account_id: Option<String>,
     label: String,
@@ -1521,6 +1762,90 @@ fn format_date(date_str: &str) -> String {
     }
 
     date_str.to_string()
+}
+
+fn current_jira_timestamp() -> String {
+    Local::now().format("%Y-%m-%dT%H:%M:%S%.3f%z").to_string()
+}
+
+fn worklog_author_name(worklog: &JiraWorklog) -> String {
+    worklog
+        .author
+        .as_ref()
+        .map(|author| author.display_name.trim())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("Unknown")
+        .to_string()
+}
+
+fn worklog_comment_text(worklog: &JiraWorklog) -> Option<String> {
+    worklog
+        .comment
+        .as_ref()
+        .filter(|comment| !comment.is_null())
+        .map(adf_value_to_display_text)
+        .map(|comment| comment.trim().to_string())
+        .filter(|comment| !comment.is_empty())
+}
+
+fn worklog_to_json(worklog: &JiraWorklog) -> Value {
+    let comment = worklog_comment_text(worklog)
+        .map(Value::String)
+        .unwrap_or(Value::Null);
+
+    json!({
+        "id": worklog.id,
+        "author": worklog_author_name(worklog),
+        "started": worklog.started,
+        "time_spent": worklog.time_spent,
+        "time_spent_seconds": worklog.time_spent_seconds,
+        "comment": comment
+    })
+}
+
+fn build_worklog_json(ticket_id: &str, worklog: &JiraWorklog) -> Value {
+    let mut payload = worklog_to_json(worklog);
+    if let Some(obj) = payload.as_object_mut() {
+        obj.insert("ticket".to_string(), json!(ticket_id));
+    }
+    payload
+}
+
+fn build_worklog_list_json(ticket_id: &str, worklogs: &[JiraWorklog]) -> Value {
+    let items: Vec<Value> = worklogs.iter().map(worklog_to_json).collect();
+    json!({
+        "ticket": ticket_id,
+        "total": worklogs.len(),
+        "worklogs": items
+    })
+}
+
+fn display_worklog_list(ticket_id: &str, worklogs: &[JiraWorklog]) {
+    println!("Worklogs: {}", ticket_id);
+
+    if worklogs.is_empty() {
+        println!("No worklogs found.");
+        return;
+    }
+
+    for (index, worklog) in worklogs.iter().enumerate() {
+        let author = worklog_author_name(worklog);
+        let started = worklog.started.as_deref().unwrap_or("Unknown");
+        let time_spent = worklog.time_spent.as_deref().unwrap_or("Unknown");
+
+        if let Some(comment) = worklog_comment_text(worklog) {
+            println!(
+                "#{} {} | {} | {} | {}",
+                index + 1,
+                author,
+                started,
+                time_spent,
+                truncate_with_ellipsis(&comment.replace('\n', " "), 72)
+            );
+        } else {
+            println!("#{} {} | {} | {}", index + 1, author, started, time_spent);
+        }
+    }
 }
 
 /// Render Atlassian Document Format (ADF) into readable text while preserving links.
@@ -2469,6 +2794,41 @@ user_email = "user@example.com"
 
         assert_eq!(payload["fields"]["description"], Value::Null);
         assert_eq!(payload["fields"]["assignee"], Value::Null);
+    }
+
+    #[test]
+    fn build_worklog_create_payload_uses_started_and_adf_comment() {
+        let payload = build_worklog_create_payload(
+            "1h 30m",
+            "2026-05-08T09:30:00.000+0200",
+            Some("First line\nSecond line"),
+        );
+
+        assert_eq!(payload["timeSpent"], "1h 30m");
+        assert_eq!(payload["started"], "2026-05-08T09:30:00.000+0200");
+        assert_eq!(payload["comment"]["type"], "doc");
+        assert_eq!(
+            payload["comment"]["content"][0]["content"][0]["text"],
+            "First line"
+        );
+        assert_eq!(
+            payload["comment"]["content"][0]["content"][1]["type"],
+            "hardBreak"
+        );
+        assert_eq!(
+            payload["comment"]["content"][0]["content"][2]["text"],
+            "Second line"
+        );
+    }
+
+    #[test]
+    fn build_worklog_create_payload_skips_blank_comment() {
+        let payload =
+            build_worklog_create_payload("30m", "2026-05-08T09:30:00.000+0200", Some("   "));
+
+        assert_eq!(payload["timeSpent"], "30m");
+        assert_eq!(payload["started"], "2026-05-08T09:30:00.000+0200");
+        assert!(payload.get("comment").is_none());
     }
 
     #[test]

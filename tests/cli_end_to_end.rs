@@ -16,10 +16,7 @@ fn default_query_without_ticket_lists_current_sprint_table() {
     )]);
     let config = TempConfig::new(&server.base_url);
 
-    let output = run_jit([
-        "--config-file",
-        config.path_str(),
-    ]);
+    let output = run_jit(["--config-file", config.path_str()]);
 
     assert!(output.status.success(), "stderr: {}", stderr(&output));
     let stdout = stdout(&output);
@@ -43,11 +40,7 @@ fn default_ticket_query_prints_summary_lines() {
     )]);
     let config = TempConfig::new(&server.base_url);
 
-    let output = run_jit([
-        "--config-file",
-        config.path_str(),
-        "RW-123",
-    ]);
+    let output = run_jit(["--config-file", config.path_str(), "RW-123"]);
 
     assert!(output.status.success(), "stderr: {}", stderr(&output));
     let stdout = stdout(&output);
@@ -70,12 +63,7 @@ fn text_ticket_query_prints_one_line_summary() {
     )]);
     let config = TempConfig::new(&server.base_url);
 
-    let output = run_jit([
-        "--config-file",
-        config.path_str(),
-        "--text",
-        "RW-123",
-    ]);
+    let output = run_jit(["--config-file", config.path_str(), "--text", "RW-123"]);
 
     assert!(output.status.success(), "stderr: {}", stderr(&output));
     assert_eq!(stdout(&output).trim(), "RW-123: Implement backlog creation");
@@ -193,8 +181,7 @@ fn create_current_sprint_json_runs_full_creation_flow() {
 
 #[test]
 fn edit_json_updates_requested_fields() {
-    let (server, requests) =
-        spawn_sequence_server(vec![("HTTP/1.1 204 No Content", "")]);
+    let (server, requests) = spawn_sequence_server(vec![("HTTP/1.1 204 No Content", "")]);
     let config = TempConfig::new(&server.base_url);
 
     let output = run_jit([
@@ -243,12 +230,7 @@ fn edit_json_updates_requested_fields() {
 #[test]
 fn edit_without_fields_fails_before_network_call() {
     let config = TempConfig::new("http://127.0.0.1:9");
-    let output = run_jit([
-        "--config-file",
-        config.path_str(),
-        "edit",
-        "RW-123",
-    ]);
+    let output = run_jit(["--config-file", config.path_str(), "edit", "RW-123"]);
 
     assert!(!output.status.success());
     assert!(
@@ -256,6 +238,239 @@ fn edit_without_fields_fails_before_network_call() {
         "stderr was: {}",
         stderr(&output)
     );
+}
+
+#[test]
+fn worklog_add_json_posts_expected_payload_with_started_and_comment() {
+    let (server, requests) = spawn_sequence_server(vec![(
+        "HTTP/1.1 201 Created",
+        r#"{"id":"9001","author":{"displayName":"Cesar Ferreira","accountId":"account-id-123"},"comment":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"First line"},{"type":"hardBreak"},{"type":"text","text":"Second line"}]}]},"started":"2026-05-08T09:30:00.000+0200","timeSpent":"1h 30m","timeSpentSeconds":5400}"#,
+    )]);
+    let config = TempConfig::new(&server.base_url);
+
+    let output = run_jit([
+        "--config-file",
+        config.path_str(),
+        "worklog",
+        "add",
+        "RW-123",
+        "--time-spent",
+        "1h 30m",
+        "--comment",
+        "First line\nSecond line",
+        "--started",
+        "2026-05-08T09:30:00.000+0200",
+        "--json",
+    ]);
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let payload: Value =
+        serde_json::from_str(stdout(&output).trim()).expect("worklog add output should be json");
+    assert_eq!(payload["ticket"], "RW-123");
+    assert_eq!(payload["id"], "9001");
+    assert_eq!(payload["author"], "Cesar Ferreira");
+    assert_eq!(payload["started"], "2026-05-08T09:30:00.000+0200");
+    assert_eq!(payload["time_spent"], "1h 30m");
+    assert_eq!(payload["time_spent_seconds"], 5400);
+    assert_eq!(payload["comment"], "First line\nSecond line");
+
+    let captured = requests
+        .recv_timeout(Duration::from_secs(2))
+        .expect("worklog add request should be captured");
+    assert!(captured.starts_with("POST /rest/api/3/issue/RW-123/worklog HTTP/1.1"));
+
+    let body_json: Value =
+        serde_json::from_str(request_body(&captured)).expect("request body should be json");
+    assert_eq!(body_json["timeSpent"], "1h 30m");
+    assert_eq!(body_json["started"], "2026-05-08T09:30:00.000+0200");
+    assert_eq!(body_json["comment"]["type"], "doc");
+    assert_eq!(
+        body_json["comment"]["content"][0]["content"][0]["text"],
+        "First line"
+    );
+    assert_eq!(
+        body_json["comment"]["content"][0]["content"][1]["type"],
+        "hardBreak"
+    );
+    assert_eq!(
+        body_json["comment"]["content"][0]["content"][2]["text"],
+        "Second line"
+    );
+
+    server.join();
+}
+
+#[test]
+fn worklog_add_without_comment_succeeds() {
+    let (server, requests) = spawn_sequence_server(vec![(
+        "HTTP/1.1 201 Created",
+        r#"{"id":"9002","author":{"displayName":"Cesar Ferreira","accountId":"account-id-123"},"started":"2026-05-08T10:00:00.000+0200","timeSpent":"30m","timeSpentSeconds":1800}"#,
+    )]);
+    let config = TempConfig::new(&server.base_url);
+
+    let output = run_jit([
+        "--config-file",
+        config.path_str(),
+        "worklog",
+        "add",
+        "RW-123",
+        "--time-spent",
+        "30m",
+        "--json",
+    ]);
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let payload: Value =
+        serde_json::from_str(stdout(&output).trim()).expect("worklog add output should be json");
+    assert_eq!(payload["ticket"], "RW-123");
+    assert_eq!(payload["id"], "9002");
+    assert_eq!(payload["time_spent"], "30m");
+    assert_eq!(payload["comment"], Value::Null);
+
+    let captured = requests
+        .recv_timeout(Duration::from_secs(2))
+        .expect("worklog add request should be captured");
+    assert!(captured.starts_with("POST /rest/api/3/issue/RW-123/worklog HTTP/1.1"));
+
+    let body_json: Value =
+        serde_json::from_str(request_body(&captured)).expect("request body should be json");
+    assert_eq!(body_json["timeSpent"], "30m");
+    assert!(body_json.get("comment").is_none());
+    assert!(body_json.get("started").is_some());
+
+    server.join();
+}
+
+#[test]
+fn worklog_add_requires_time_spent_before_loading_configuration() {
+    let output = run_jit(["worklog", "add", "RW-123"]);
+
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("required arguments were not provided"),
+        "stderr was: {}",
+        stderr(&output)
+    );
+    assert!(
+        stderr(&output).contains("--time-spent <TIME_SPENT>"),
+        "stderr was: {}",
+        stderr(&output)
+    );
+    assert!(
+        !stderr(&output).contains("No configuration found"),
+        "stderr was: {}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn worklog_list_human_output_is_scan_friendly() {
+    let (server, requests) = spawn_sequence_server(vec![(
+        "HTTP/1.1 200 OK",
+        r#"{"startAt":0,"maxResults":20,"total":2,"worklogs":[{"id":"9001","author":{"displayName":"Cesar Ferreira","accountId":"account-id-123"},"comment":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"Investigated failing deploy"}]}]},"started":"2026-05-08T09:30:00.000+0200","timeSpent":"1h 30m","timeSpentSeconds":5400},{"id":"9002","author":{"displayName":"Ada Lovelace","accountId":"account-id-999"},"started":"2026-05-08T11:15:00.000+0200","timeSpent":"30m","timeSpentSeconds":1800}]}"#,
+    )]);
+    let config = TempConfig::new(&server.base_url);
+
+    let output = run_jit([
+        "--config-file",
+        config.path_str(),
+        "worklog",
+        "list",
+        "RW-123",
+    ]);
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let stdout = stdout(&output);
+    assert!(stdout.contains("Worklogs: RW-123"));
+    assert!(stdout.contains(
+        "#1 Cesar Ferreira | 2026-05-08T09:30:00.000+0200 | 1h 30m | Investigated failing deploy"
+    ));
+    assert!(stdout.contains("#2 Ada Lovelace | 2026-05-08T11:15:00.000+0200 | 30m"));
+
+    let captured = requests
+        .recv_timeout(Duration::from_secs(2))
+        .expect("worklog list request should be captured");
+    assert!(captured.starts_with("GET /rest/api/3/issue/RW-123/worklog HTTP/1.1"));
+
+    server.join();
+}
+
+#[test]
+fn worklog_list_json_returns_structured_payload() {
+    let (server, requests) = spawn_sequence_server(vec![(
+        "HTTP/1.1 200 OK",
+        r#"{"startAt":0,"maxResults":20,"total":1,"worklogs":[{"id":"9001","author":{"displayName":"Cesar Ferreira","accountId":"account-id-123"},"comment":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"Investigated failing deploy"}]}]},"started":"2026-05-08T09:30:00.000+0200","timeSpent":"1h 30m","timeSpentSeconds":5400}]}"#,
+    )]);
+    let config = TempConfig::new(&server.base_url);
+
+    let output = run_jit([
+        "--config-file",
+        config.path_str(),
+        "worklog",
+        "list",
+        "RW-123",
+        "--json",
+    ]);
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let payload: Value =
+        serde_json::from_str(stdout(&output).trim()).expect("worklog list output should be json");
+    assert_eq!(payload["ticket"], "RW-123");
+    assert_eq!(payload["total"], 1);
+    assert_eq!(payload["worklogs"][0]["id"], "9001");
+    assert_eq!(payload["worklogs"][0]["author"], "Cesar Ferreira");
+    assert_eq!(payload["worklogs"][0]["time_spent"], "1h 30m");
+    assert_eq!(
+        payload["worklogs"][0]["comment"],
+        "Investigated failing deploy"
+    );
+
+    let captured = requests
+        .recv_timeout(Duration::from_secs(2))
+        .expect("worklog list request should be captured");
+    assert!(captured.starts_with("GET /rest/api/3/issue/RW-123/worklog HTTP/1.1"));
+
+    server.join();
+}
+
+#[test]
+fn worklog_list_uses_server_cursor_for_underfilled_pages() {
+    let (server, requests) = spawn_sequence_server(vec![
+        (
+            "HTTP/1.1 200 OK",
+            r#"{"startAt":0,"maxResults":2,"total":3,"worklogs":[{"id":"9001","author":{"displayName":"Cesar Ferreira","accountId":"account-id-123"},"started":"2026-05-08T09:30:00.000+0200","timeSpent":"1h","timeSpentSeconds":3600}]}"#,
+        ),
+        (
+            "HTTP/1.1 200 OK",
+            r#"{"startAt":2,"maxResults":2,"total":3,"worklogs":[{"id":"9003","author":{"displayName":"Ada Lovelace","accountId":"account-id-999"},"started":"2026-05-08T11:15:00.000+0200","timeSpent":"30m","timeSpentSeconds":1800}]}"#,
+        ),
+    ]);
+    let config = TempConfig::new(&server.base_url);
+
+    let output = run_jit([
+        "--config-file",
+        config.path_str(),
+        "worklog",
+        "list",
+        "RW-123",
+        "--json",
+    ]);
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let payload: Value =
+        serde_json::from_str(stdout(&output).trim()).expect("worklog list output should be json");
+    assert_eq!(payload["ticket"], "RW-123");
+    assert_eq!(payload["total"], 2);
+    assert_eq!(payload["worklogs"][0]["id"], "9001");
+    assert_eq!(payload["worklogs"][1]["id"], "9003");
+
+    let captured = collect_requests(&requests, 2);
+    assert!(captured[0].starts_with("GET /rest/api/3/issue/RW-123/worklog HTTP/1.1"));
+    assert!(captured[1].starts_with(
+        "GET /rest/api/3/issue/RW-123/worklog?startAt=2 HTTP/1.1"
+    ));
+
+    server.join();
 }
 
 #[test]
