@@ -16,6 +16,8 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+const DEFAULT_TICKET_LIMIT: u32 = 50;
+
 #[derive(Parser, Debug)]
 #[clap(author, version, about)]
 struct Cli {
@@ -85,8 +87,8 @@ struct QueryArgs {
     #[clap(long)]
     since: Option<String>,
 
-    /// Maximum number of tickets to retrieve (default: 10)
-    #[clap(long, default_value = "10")]
+    /// Maximum number of tickets to retrieve
+    #[clap(long, default_value_t = DEFAULT_TICKET_LIMIT)]
     limit: u32,
 
     /// Path to a custom config.toml file
@@ -2444,6 +2446,14 @@ mod tests {
             Some(PathBuf::from("/tmp/jit-config.toml"))
         );
         assert_eq!(cli.query.ticket.as_deref(), Some("RW-123"));
+    }
+
+    #[test]
+    fn cli_defaults_my_tickets_limit_to_full_sprint_view() {
+        let cli = Cli::try_parse_from(["jit", "--my-tickets"])
+            .expect("my tickets flag should parse");
+
+        assert_eq!(cli.query.limit, 50);
     }
 
     #[test]

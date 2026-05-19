@@ -303,6 +303,8 @@ jit --my-tickets --include-prs
 jit --my-tickets --limit 5
 ```
 
+The current sprint view fetches up to 50 tickets by default. Use `--limit` to narrow or expand the result set.
+
 Example output:
 
 ```text
