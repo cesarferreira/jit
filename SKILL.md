@@ -88,6 +88,8 @@ jit edit RW-123 --summary "Improve edit flow" --json
 ```
 10. Use a specific config file:
 ```bash
+jit auth
+jit --config-file /path/to/config.toml auth
 jit --config-file /path/to/config.toml ISSUE-123
 jit --config-file /path/to/config.toml --my-tickets
 jit --config-file /path/to/config.toml create --project RW --summary "Improve ticket creation flow"
@@ -105,6 +107,7 @@ jit --config-file /path/to/config.toml edit RW-123 --summary "Improve edit flow"
 - Backlog ticket creation
 - Current sprint ticket creation
 - Ticket or task editing
+- Credential setup
 2. Normalize input:
 - If the user provides a Jira URL, pass it directly to `jit`.
 - If the user provides a ticket key, pass the key directly.
@@ -133,7 +136,7 @@ jit --config-file /path/to/config.toml edit RW-123 --summary "Improve edit flow"
 
 1. Missing credentials:
 - Symptom: configuration is missing or invalid
-- Fix: provide credentials via `config.toml` or `--config-file`
+- Fix: run `jit auth`, or provide credentials via `config.toml` or `--config-file`
 2. URL parsing failure:
 - Symptom: `Could not extract ticket ID from URL`
 - Fix: ensure URL matches `/browse/PROJECT-123`
