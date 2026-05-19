@@ -4,9 +4,12 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
+
+static TEMP_CONFIG_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 #[test]
 fn default_query_without_ticket_lists_current_sprint_table() {
@@ -16,10 +19,7 @@ fn default_query_without_ticket_lists_current_sprint_table() {
     )]);
     let config = TempConfig::new(&server.base_url);
 
-    let output = run_jit([
-        "--config-file",
-        config.path_str(),
-    ]);
+    let output = run_jit(["--config-file", config.path_str()]);
 
     assert!(output.status.success(), "stderr: {}", stderr(&output));
     let stdout = stdout(&output);
@@ -36,6 +36,38 @@ fn default_query_without_ticket_lists_current_sprint_table() {
 }
 
 #[test]
+fn my_tickets_reports_auth_error_when_empty_search_masks_expired_token() {
+    let (server, requests) = spawn_sequence_server(vec![
+        ("HTTP/1.1 200 OK", r#"{"issues":[],"isLast":true}"#),
+        (
+            "HTTP/1.1 401 Unauthorized",
+            r#"{"errorMessages":["Unauthorized"]}"#,
+        ),
+    ]);
+    let config = TempConfig::new(&server.base_url);
+
+    let output = run_jit(["--config-file", config.path_str(), "--my-tickets"]);
+
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("Jira authentication failed"),
+        "stderr was: {}",
+        stderr(&output)
+    );
+    assert!(
+        !stdout(&output).contains("No tickets found in the current sprint."),
+        "stdout was: {}",
+        stdout(&output)
+    );
+
+    let captured = collect_requests(&requests, 2);
+    assert!(captured[0].starts_with("POST /rest/api/3/search/jql HTTP/1.1"));
+    assert!(captured[1].starts_with("GET /rest/api/3/myself HTTP/1.1"));
+
+    server.join();
+}
+
+#[test]
 fn default_ticket_query_prints_summary_lines() {
     let (server, requests) = spawn_sequence_server(vec![(
         "HTTP/1.1 200 OK",
@@ -43,11 +75,7 @@ fn default_ticket_query_prints_summary_lines() {
     )]);
     let config = TempConfig::new(&server.base_url);
 
-    let output = run_jit([
-        "--config-file",
-        config.path_str(),
-        "RW-123",
-    ]);
+    let output = run_jit(["--config-file", config.path_str(), "RW-123"]);
 
     assert!(output.status.success(), "stderr: {}", stderr(&output));
     let stdout = stdout(&output);
@@ -70,12 +98,7 @@ fn text_ticket_query_prints_one_line_summary() {
     )]);
     let config = TempConfig::new(&server.base_url);
 
-    let output = run_jit([
-        "--config-file",
-        config.path_str(),
-        "--text",
-        "RW-123",
-    ]);
+    let output = run_jit(["--config-file", config.path_str(), "--text", "RW-123"]);
 
     assert!(output.status.success(), "stderr: {}", stderr(&output));
     assert_eq!(stdout(&output).trim(), "RW-123: Implement backlog creation");
@@ -193,8 +216,7 @@ fn create_current_sprint_json_runs_full_creation_flow() {
 
 #[test]
 fn edit_json_updates_requested_fields() {
-    let (server, requests) =
-        spawn_sequence_server(vec![("HTTP/1.1 204 No Content", "")]);
+    let (server, requests) = spawn_sequence_server(vec![("HTTP/1.1 204 No Content", "")]);
     let config = TempConfig::new(&server.base_url);
 
     let output = run_jit([
@@ -243,12 +265,7 @@ fn edit_json_updates_requested_fields() {
 #[test]
 fn edit_without_fields_fails_before_network_call() {
     let config = TempConfig::new("http://127.0.0.1:9");
-    let output = run_jit([
-        "--config-file",
-        config.path_str(),
-        "edit",
-        "RW-123",
-    ]);
+    let output = run_jit(["--config-file", config.path_str(), "edit", "RW-123"]);
 
     assert!(!output.status.success());
     assert!(
@@ -282,11 +299,8 @@ struct TempConfig {
 
 impl TempConfig {
     fn new(base_url: &str) -> Self {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock should be after epoch")
-            .as_nanos();
-        let dir = std::env::temp_dir().join(format!("jit-cli-e2e-{unique}"));
+        let unique = TEMP_CONFIG_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("jit-cli-e2e-{}-{unique}", std::process::id()));
         fs::create_dir_all(&dir).expect("temp config directory should be created");
 
         let path = dir.join("config.toml");

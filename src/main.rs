@@ -787,7 +787,39 @@ fn fetch_my_tickets(client: &Client, base_url: &str, limit: u32) -> Result<Vec<J
         .json()
         .context("Failed to parse JIRA API response")?;
 
+    if search_result.issues.is_empty() {
+        validate_jira_authentication(client, base_url)?;
+    }
+
     Ok(search_result.issues)
+}
+
+fn validate_jira_authentication(client: &Client, base_url: &str) -> Result<()> {
+    let url = format!("{}/rest/api/3/myself", base_url);
+    let response = client
+        .get(&url)
+        .send()
+        .context("Failed to send request to JIRA API")?;
+
+    if response.status().is_success() {
+        return Ok(());
+    }
+
+    let status = response.status();
+    let body = response.text().unwrap_or_default();
+    if status.as_u16() == 401 || status.as_u16() == 403 {
+        return Err(anyhow!(
+            "Jira authentication failed with status: {} - {}. Check your Jira email and API token.",
+            status,
+            body
+        ));
+    }
+
+    Err(anyhow!(
+        "Jira authentication check failed with status: {} - {}",
+        status,
+        body
+    ))
 }
 
 fn create_jira_issue(
