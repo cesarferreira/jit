@@ -488,7 +488,11 @@ fn resolve_config_path(args: &QueryArgs) -> Result<PathBuf> {
 }
 
 fn default_config_path() -> Option<PathBuf> {
-    dirs::config_dir().map(|path| path.join("jit").join("config.toml"))
+    dirs::home_dir().map(|path| config_path_from_home(&path))
+}
+
+fn config_path_from_home(home_dir: &Path) -> PathBuf {
+    home_dir.join(".config").join("jit").join("config.toml")
 }
 
 fn read_config_file(path: &Path) -> Result<JiraConfig> {
@@ -2466,6 +2470,16 @@ user_email = "user@example.com"
         assert_eq!(config.base_url, "https://example.atlassian.net");
         assert_eq!(config.api_token, "token-123");
         assert_eq!(config.user_email, "user@example.com");
+    }
+
+    #[test]
+    fn config_path_from_home_uses_dot_config_jit_directory() {
+        let path = config_path_from_home(Path::new("/Users/example"));
+
+        assert_eq!(
+            path,
+            PathBuf::from("/Users/example/.config/jit/config.toml")
+        );
     }
 
     #[test]
