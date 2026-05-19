@@ -486,6 +486,20 @@ jit --config-file /path/to/config.toml edit RW-123 --summary "Improve edit flow"
 
 ## Configuration
 
+Run the interactive auth wizard:
+
+```bash
+jit auth
+```
+
+The wizard asks for your Jira company URL and email, opens the Atlassian API token page, validates the token you paste, and writes credentials to `~/.config/jit/config.toml`.
+
+To write a specific config file instead:
+
+```bash
+jit --config-file /path/to/config.toml auth
+```
+
 `jit` looks for Jira credentials in this order:
 
 1. `--config-file <path>`

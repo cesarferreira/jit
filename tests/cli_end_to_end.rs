@@ -3,7 +3,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::thread;
@@ -65,6 +65,122 @@ fn my_tickets_reports_auth_error_when_empty_search_masks_expired_token() {
     assert!(captured[1].starts_with("GET /rest/api/3/myself HTTP/1.1"));
 
     server.join();
+}
+
+#[test]
+fn auth_wizard_writes_config_after_validating_credentials() {
+    let (server, requests) = spawn_sequence_server(vec![(
+        "HTTP/1.1 200 OK",
+        r#"{"accountId":"account-id-123","displayName":"Cesar Ferreira"}"#,
+    )]);
+    let config = TempConfig::empty();
+
+    let output = run_jit_with_stdin(
+        ["--config-file", config.path_str(), "auth"],
+        &format!("{}\nuser@example.com\ntoken-123\n", server.base_url),
+    );
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let stdout = stdout(&output);
+    assert!(stdout.contains("Open this URL to create an Atlassian API token:"));
+    assert!(stdout.contains("Saved Jira credentials to"));
+
+    let contents = fs::read_to_string(&config.path).expect("config should be written");
+    assert!(contents.contains("[jira]"));
+    assert!(contents.contains(&format!("base_url = \"{}\"", server.base_url)));
+    assert!(contents.contains("api_token = \"token-123\""));
+    assert!(contents.contains("user_email = \"user@example.com\""));
+
+    let captured = requests
+        .recv_timeout(Duration::from_secs(2))
+        .expect("auth validation request should be captured");
+    assert!(captured.starts_with("GET /rest/api/3/myself HTTP/1.1"));
+
+    server.join();
+}
+
+#[test]
+fn auth_wizard_rejects_invalid_token_without_writing_config() {
+    let (server, requests) = spawn_sequence_server(vec![(
+        "HTTP/1.1 401 Unauthorized",
+        r#"{"errorMessages":["Unauthorized"]}"#,
+    )]);
+    let config = TempConfig::empty();
+
+    let output = run_jit_with_stdin(
+        ["--config-file", config.path_str(), "auth"],
+        &format!("{}\nuser@example.com\nbad-token\n", server.base_url),
+    );
+
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("Jira authentication failed"),
+        "stderr was: {}",
+        stderr(&output)
+    );
+    assert!(
+        !config.path.exists(),
+        "config should not be written when auth fails"
+    );
+
+    let captured = requests
+        .recv_timeout(Duration::from_secs(2))
+        .expect("auth validation request should be captured");
+    assert!(captured.starts_with("GET /rest/api/3/myself HTTP/1.1"));
+
+    server.join();
+}
+
+#[test]
+fn auth_wizard_uses_existing_url_and_email_when_prompts_are_empty() {
+    let (server, requests) = spawn_sequence_server(vec![(
+        "HTTP/1.1 200 OK",
+        r#"{"accountId":"account-id-123","displayName":"Cesar Ferreira"}"#,
+    )]);
+    let config = TempConfig::new(&server.base_url);
+
+    let output = run_jit_with_stdin(
+        ["--config-file", config.path_str(), "auth"],
+        "y\n\n\nnew-token\n",
+    );
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert!(
+        stdout(&output).contains(&format!("Jira company URL [{}]:", server.base_url)),
+        "stdout was: {}",
+        stdout(&output)
+    );
+    assert!(
+        stdout(&output).contains("Jira account email [user@example.com]:"),
+        "stdout was: {}",
+        stdout(&output)
+    );
+
+    let contents = fs::read_to_string(&config.path).expect("config should be written");
+    assert!(contents.contains(&format!("base_url = \"{}\"", server.base_url)));
+    assert!(contents.contains("api_token = \"new-token\""));
+    assert!(contents.contains("user_email = \"user@example.com\""));
+
+    let captured = requests
+        .recv_timeout(Duration::from_secs(2))
+        .expect("auth validation request should be captured");
+    assert!(captured.starts_with("GET /rest/api/3/myself HTTP/1.1"));
+
+    server.join();
+}
+
+#[test]
+fn missing_explicit_config_suggests_auth_wizard() {
+    let config = TempConfig::empty();
+
+    let output = run_jit(["--config-file", config.path_str(), "--my-tickets"]);
+
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("Run `jit auth --config-file"),
+        "stderr was: {}",
+        stderr(&output)
+    );
 }
 
 #[test]
@@ -298,21 +414,26 @@ struct TempConfig {
 }
 
 impl TempConfig {
-    fn new(base_url: &str) -> Self {
+    fn empty() -> Self {
         let unique = TEMP_CONFIG_COUNTER.fetch_add(1, Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!("jit-cli-e2e-{}-{unique}", std::process::id()));
         fs::create_dir_all(&dir).expect("temp config directory should be created");
-
         let path = dir.join("config.toml");
+
+        Self { dir, path }
+    }
+
+    fn new(base_url: &str) -> Self {
+        let config = Self::empty();
         fs::write(
-            &path,
+            &config.path,
             format!(
                 "[jira]\nbase_url = \"{base_url}\"\napi_token = \"token-123\"\nuser_email = \"user@example.com\"\n"
             ),
         )
         .expect("temp config file should be written");
 
-        Self { dir, path }
+        config
     }
 
     fn path_str(&self) -> &str {
@@ -345,6 +466,27 @@ fn run_jit<'a>(args: impl IntoIterator<Item = &'a str>) -> Output {
         .env("NO_COLOR", "1")
         .output()
         .expect("jit command should run")
+}
+
+fn run_jit_with_stdin<'a>(args: impl IntoIterator<Item = &'a str>, stdin: &str) -> Output {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_jit"))
+        .args(args)
+        .env("NO_COLOR", "1")
+        .env("JIT_AUTH_SKIP_OPEN", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("jit command should spawn");
+
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin should be piped")
+        .write_all(stdin.as_bytes())
+        .expect("stdin should be written");
+
+    child.wait_with_output().expect("jit command should run")
 }
 
 fn stdout(output: &Output) -> String {

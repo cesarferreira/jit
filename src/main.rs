@@ -12,7 +12,9 @@ use serde_json::Value;
 use serde_json::json;
 use std::collections::HashMap;
 use std::fs;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about)]
@@ -26,6 +28,8 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    /// Configure Jira credentials interactively
+    Auth,
     /// Create a new Jira issue without sprint assignment so it lands in the backlog on scrum boards
     Create(CreateArgs),
     /// Edit an existing Jira ticket's core fields, including Task issues
@@ -326,11 +330,16 @@ fn main() -> Result<()> {
         validate_since_date(since)?;
     }
 
+    if matches!(args.command, Some(Commands::Auth)) {
+        return run_auth_command(args.query.config_file.as_deref());
+    }
+
     let config = load_configuration(&args.query)?;
 
     let client = create_jira_client(&config.user_email, &config.api_token)?;
 
     match args.command {
+        Some(Commands::Auth) => unreachable!("auth command is handled before loading config"),
         Some(Commands::Create(create_args)) => {
             run_create_issue_command(&client, &config.base_url, &create_args)
         }
@@ -451,7 +460,8 @@ fn resolve_config_path(args: &QueryArgs) -> Result<PathBuf> {
         }
 
         return Err(anyhow!(
-            "Specified config.toml file not found at: {}",
+            "Specified config.toml file not found at: {}. Run `jit auth --config-file {}` to create it, or create the file manually.",
+            config_path.display(),
             config_path.display()
         ));
     }
@@ -467,18 +477,22 @@ fn resolve_config_path(args: &QueryArgs) -> Result<PathBuf> {
         }
 
         return Err(anyhow!(
-            "No configuration found. Create `config.toml` in the current directory or at `{}` with:\n[jira]\nbase_url = \"https://your-company.atlassian.net\"\napi_token = \"your_api_token_here\"\nuser_email = \"your_email@example.com\"",
+            "No configuration found. Run `jit auth` to configure Jira credentials, or create `config.toml` in the current directory or at `{}` with:\n[jira]\nbase_url = \"https://your-company.atlassian.net\"\napi_token = \"your_api_token_here\"\nuser_email = \"your_email@example.com\"",
             user_config.display()
         ));
     }
 
     Err(anyhow!(
-        "No configuration found. Create a `config.toml` file with:\n[jira]\nbase_url = \"https://your-company.atlassian.net\"\napi_token = \"your_api_token_here\"\nuser_email = \"your_email@example.com\""
+        "No configuration found. Run `jit auth` to configure Jira credentials, or create a `config.toml` file with:\n[jira]\nbase_url = \"https://your-company.atlassian.net\"\napi_token = \"your_api_token_here\"\nuser_email = \"your_email@example.com\""
     ))
 }
 
 fn default_config_path() -> Option<PathBuf> {
-    dirs::config_dir().map(|path| path.join("jit").join("config.toml"))
+    dirs::home_dir().map(|path| config_path_from_home(&path))
+}
+
+fn config_path_from_home(home_dir: &Path) -> PathBuf {
+    home_dir.join(".config").join("jit").join("config.toml")
 }
 
 fn read_config_file(path: &Path) -> Result<JiraConfig> {
@@ -491,6 +505,174 @@ fn read_config_file(path: &Path) -> Result<JiraConfig> {
         )
     })?;
     Ok(config.jira)
+}
+
+fn run_auth_command(config_file: Option<&Path>) -> Result<()> {
+    let config_path = match config_file {
+        Some(path) => path.to_path_buf(),
+        None => default_config_path().context("Could not determine default config path")?,
+    };
+
+    let mut existing_config = None;
+    if config_path.exists() {
+        match read_config_file(&config_path) {
+            Ok(config) => {
+                println!("Existing Jira config found at {}", config_path.display());
+                println!("Base URL: {}", config.base_url);
+                println!("Email:    {}", config.user_email);
+                println!("Token:    {}", mask_token(&config.api_token));
+                existing_config = Some(config);
+            }
+            Err(err) => {
+                println!(
+                    "Existing config at {} could not be read:",
+                    config_path.display()
+                );
+                println!("{}", err);
+            }
+        }
+
+        if !prompt_yes_no("Overwrite this config? [y/N]: ")? {
+            println!("Leaving existing config unchanged.");
+            return Ok(());
+        }
+    }
+
+    let base_url_input = if let Some(config) = existing_config.as_ref() {
+        prompt_with_default("Jira company URL", &config.base_url)?
+    } else {
+        prompt_required("Jira company URL: ")?
+    };
+    let base_url = normalize_jira_base_url(&base_url_input)?;
+    let user_email = if let Some(config) = existing_config.as_ref() {
+        prompt_with_default("Jira account email", &config.user_email)?
+    } else {
+        prompt_required("Jira account email: ")?
+    };
+
+    let token_url = "https://id.atlassian.com/manage-profile/security/api-tokens";
+    println!("Open this URL to create an Atlassian API token:");
+    println!("{}", token_url);
+    if let Err(err) = open_url(token_url) {
+        println!("Could not open your browser automatically: {}", err);
+    }
+
+    let api_token = prompt_required("Paste API token: ")?;
+    let client = create_jira_client(&user_email, &api_token)?;
+    validate_jira_authentication(&client, &base_url)?;
+
+    if let Some(parent) = config_path.parent() {
+        fs::create_dir_all(parent).with_context(|| {
+            format!("Failed to create config directory at {}", parent.display())
+        })?;
+    }
+
+    fs::write(
+        &config_path,
+        format_config_toml(&JiraConfig {
+            base_url,
+            api_token,
+            user_email,
+        }),
+    )
+    .with_context(|| format!("Failed to write config file at {}", config_path.display()))?;
+
+    println!("Saved Jira credentials to {}", config_path.display());
+    Ok(())
+}
+
+fn prompt_required(prompt: &str) -> Result<String> {
+    print!("{}", prompt);
+    io::stdout().flush()?;
+
+    let mut value = String::new();
+    io::stdin().read_line(&mut value)?;
+    let value = value.trim().to_string();
+    if value.is_empty() {
+        return Err(anyhow!(
+            "{} cannot be empty",
+            prompt.trim().trim_end_matches(':')
+        ));
+    }
+    Ok(value)
+}
+
+fn prompt_with_default(prompt: &str, default: &str) -> Result<String> {
+    print!("{} [{}]: ", prompt, default);
+    io::stdout().flush()?;
+
+    let mut value = String::new();
+    io::stdin().read_line(&mut value)?;
+    let value = value.trim();
+    if value.is_empty() {
+        Ok(default.to_string())
+    } else {
+        Ok(value.to_string())
+    }
+}
+
+fn prompt_yes_no(prompt: &str) -> Result<bool> {
+    print!("{}", prompt);
+    io::stdout().flush()?;
+
+    let mut value = String::new();
+    io::stdin().read_line(&mut value)?;
+    Ok(matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
+}
+
+fn normalize_jira_base_url(input: &str) -> Result<String> {
+    let base_url = input.trim().trim_end_matches('/').to_string();
+    if !base_url.starts_with("https://") && !base_url.starts_with("http://") {
+        return Err(anyhow!(
+            "Jira company URL must start with https:// or http://"
+        ));
+    }
+    Ok(base_url)
+}
+
+fn open_url(url: &str) -> Result<()> {
+    if std::env::var_os("JIT_AUTH_SKIP_OPEN").is_some() {
+        return Ok(());
+    }
+
+    let status = if cfg!(target_os = "macos") {
+        Command::new("open").arg(url).status()
+    } else if cfg!(target_os = "windows") {
+        Command::new("cmd").args(["/C", "start", "", url]).status()
+    } else {
+        Command::new("xdg-open").arg(url).status()
+    }
+    .context("failed to launch browser command")?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(anyhow!("browser command exited with {}", status))
+    }
+}
+
+fn format_config_toml(config: &JiraConfig) -> String {
+    format!(
+        "[jira]\nbase_url = {}\napi_token = {}\nuser_email = {}\n",
+        toml_string(&config.base_url),
+        toml_string(&config.api_token),
+        toml_string(&config.user_email)
+    )
+}
+
+fn toml_string(value: &str) -> String {
+    serde_json::to_string(value).expect("string serialization should not fail")
+}
+
+fn mask_token(token: &str) -> String {
+    if token.is_empty() {
+        return "<empty>".to_string();
+    }
+
+    "*".repeat(token.chars().count().min(8))
 }
 
 fn run_create_issue_command(client: &Client, jira_base_url: &str, args: &CreateArgs) -> Result<()> {
@@ -2288,6 +2470,16 @@ user_email = "user@example.com"
         assert_eq!(config.base_url, "https://example.atlassian.net");
         assert_eq!(config.api_token, "token-123");
         assert_eq!(config.user_email, "user@example.com");
+    }
+
+    #[test]
+    fn config_path_from_home_uses_dot_config_jit_directory() {
+        let path = config_path_from_home(Path::new("/Users/example"));
+
+        assert_eq!(
+            path,
+            PathBuf::from("/Users/example/.config/jit/config.toml")
+        );
     }
 
     #[test]
