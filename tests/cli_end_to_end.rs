@@ -132,6 +132,44 @@ fn auth_wizard_rejects_invalid_token_without_writing_config() {
 }
 
 #[test]
+fn auth_wizard_uses_existing_url_and_email_when_prompts_are_empty() {
+    let (server, requests) = spawn_sequence_server(vec![(
+        "HTTP/1.1 200 OK",
+        r#"{"accountId":"account-id-123","displayName":"Cesar Ferreira"}"#,
+    )]);
+    let config = TempConfig::new(&server.base_url);
+
+    let output = run_jit_with_stdin(
+        ["--config-file", config.path_str(), "auth"],
+        "y\n\n\nnew-token\n",
+    );
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert!(
+        stdout(&output).contains(&format!("Jira company URL [{}]:", server.base_url)),
+        "stdout was: {}",
+        stdout(&output)
+    );
+    assert!(
+        stdout(&output).contains("Jira account email [user@example.com]:"),
+        "stdout was: {}",
+        stdout(&output)
+    );
+
+    let contents = fs::read_to_string(&config.path).expect("config should be written");
+    assert!(contents.contains(&format!("base_url = \"{}\"", server.base_url)));
+    assert!(contents.contains("api_token = \"new-token\""));
+    assert!(contents.contains("user_email = \"user@example.com\""));
+
+    let captured = requests
+        .recv_timeout(Duration::from_secs(2))
+        .expect("auth validation request should be captured");
+    assert!(captured.starts_with("GET /rest/api/3/myself HTTP/1.1"));
+
+    server.join();
+}
+
+#[test]
 fn missing_explicit_config_suggests_auth_wizard() {
     let config = TempConfig::empty();
 

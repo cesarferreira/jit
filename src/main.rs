@@ -509,6 +509,7 @@ fn run_auth_command(config_file: Option<&Path>) -> Result<()> {
         None => default_config_path().context("Could not determine default config path")?,
     };
 
+    let mut existing_config = None;
     if config_path.exists() {
         match read_config_file(&config_path) {
             Ok(config) => {
@@ -516,6 +517,7 @@ fn run_auth_command(config_file: Option<&Path>) -> Result<()> {
                 println!("Base URL: {}", config.base_url);
                 println!("Email:    {}", config.user_email);
                 println!("Token:    {}", mask_token(&config.api_token));
+                existing_config = Some(config);
             }
             Err(err) => {
                 println!(
@@ -532,8 +534,17 @@ fn run_auth_command(config_file: Option<&Path>) -> Result<()> {
         }
     }
 
-    let base_url = normalize_jira_base_url(&prompt_required("Jira company URL: ")?)?;
-    let user_email = prompt_required("Jira account email: ")?;
+    let base_url_input = if let Some(config) = existing_config.as_ref() {
+        prompt_with_default("Jira company URL", &config.base_url)?
+    } else {
+        prompt_required("Jira company URL: ")?
+    };
+    let base_url = normalize_jira_base_url(&base_url_input)?;
+    let user_email = if let Some(config) = existing_config.as_ref() {
+        prompt_with_default("Jira account email", &config.user_email)?
+    } else {
+        prompt_required("Jira account email: ")?
+    };
 
     let token_url = "https://id.atlassian.com/manage-profile/security/api-tokens";
     println!("Open this URL to create an Atlassian API token:");
@@ -580,6 +591,20 @@ fn prompt_required(prompt: &str) -> Result<String> {
         ));
     }
     Ok(value)
+}
+
+fn prompt_with_default(prompt: &str, default: &str) -> Result<String> {
+    print!("{} [{}]: ", prompt, default);
+    io::stdout().flush()?;
+
+    let mut value = String::new();
+    io::stdin().read_line(&mut value)?;
+    let value = value.trim();
+    if value.is_empty() {
+        Ok(default.to_string())
+    } else {
+        Ok(value.to_string())
+    }
 }
 
 fn prompt_yes_no(prompt: &str) -> Result<bool> {
