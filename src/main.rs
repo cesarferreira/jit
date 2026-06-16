@@ -36,6 +36,27 @@ enum Commands {
     Create(CreateArgs),
     /// Edit an existing Jira ticket's core fields, including Task issues
     Edit(EditArgs),
+    /// Manage the shared jit agent skill (SKILL.md) installed for coding agents like Codex and Claude Code
+    Skill(SkillArgs),
+}
+
+#[derive(Args, Debug)]
+struct SkillArgs {
+    #[command(subcommand)]
+    command: SkillCommands,
+}
+
+#[derive(Subcommand, Debug)]
+enum SkillCommands {
+    /// Download the latest SKILL.md and install it for all known agents (Codex and Claude Code)
+    Install(SkillInstallArgs),
+}
+
+#[derive(Args, Debug)]
+struct SkillInstallArgs {
+    /// Target a specific agent instead of installing for all known agents (codex | claude)
+    #[clap(long)]
+    agent: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -336,12 +357,18 @@ fn main() -> Result<()> {
         return run_auth_command(args.query.config_file.as_deref());
     }
 
+    if let Some(Commands::Skill(skill_args)) = args.command.as_ref() {
+        let SkillCommands::Install(install_args) = &skill_args.command;
+        return run_skill_install_command(install_args);
+    }
+
     let config = load_configuration(&args.query)?;
 
     let client = create_jira_client(&config.user_email, &config.api_token)?;
 
     match args.command {
         Some(Commands::Auth) => unreachable!("auth command is handled before loading config"),
+        Some(Commands::Skill(_)) => unreachable!("skill command is handled before loading config"),
         Some(Commands::Create(create_args)) => {
             run_create_issue_command(&client, &config.base_url, &create_args)
         }
@@ -580,6 +607,83 @@ fn run_auth_command(config_file: Option<&Path>) -> Result<()> {
     .with_context(|| format!("Failed to write config file at {}", config_path.display()))?;
 
     println!("Saved Jira credentials to {}", config_path.display());
+    Ok(())
+}
+
+const SKILL_SOURCE_URL: &str =
+    "https://raw.githubusercontent.com/cesarferreira/jit/refs/heads/main/SKILL.md";
+
+struct AgentTarget {
+    name: &'static str,
+    home_subpath: &'static [&'static str],
+}
+
+const AGENT_TARGETS: &[AgentTarget] = &[
+    AgentTarget {
+        name: "codex",
+        home_subpath: &[".codex", "skills", "jit", "SKILL.md"],
+    },
+    AgentTarget {
+        name: "claude",
+        home_subpath: &[".claude", "skills", "jit", "SKILL.md"],
+    },
+];
+
+fn run_skill_install_command(args: &SkillInstallArgs) -> Result<()> {
+    let home = dirs::home_dir().context("Could not determine home directory")?;
+
+    let targets: Vec<&AgentTarget> = match args.agent.as_deref() {
+        Some(agent) => {
+            let agent = agent.to_ascii_lowercase();
+            let target = AGENT_TARGETS
+                .iter()
+                .find(|t| t.name == agent)
+                .ok_or_else(|| {
+                    anyhow!(
+                        "Unknown agent '{}'. Supported: {}",
+                        agent,
+                        AGENT_TARGETS
+                            .iter()
+                            .map(|t| t.name)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                })?;
+            vec![target]
+        }
+        None => AGENT_TARGETS.iter().collect(),
+    };
+
+    println!("Downloading SKILL.md from {}", SKILL_SOURCE_URL);
+    let client = ClientBuilder::new().build()?;
+    let response = client.get(SKILL_SOURCE_URL).send()?;
+    if !response.status().is_success() {
+        return Err(anyhow!(
+            "Failed to download SKILL.md ({}): {}",
+            response.status(),
+            SKILL_SOURCE_URL
+        ));
+    }
+    let skill_contents = response.text()?;
+
+    for target in targets {
+        let mut path = home.clone();
+        for segment in target.home_subpath {
+            path.push(segment);
+        }
+
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!("Failed to create skill directory at {}", parent.display())
+            })?;
+        }
+
+        fs::write(&path, &skill_contents)
+            .with_context(|| format!("Failed to write SKILL.md to {}", path.display()))?;
+
+        println!("Installed {} skill at {}", target.name, path.display());
+    }
+
     Ok(())
 }
 
@@ -2433,6 +2537,36 @@ mod tests {
                 assert!(args.json);
             }
             _ => panic!("expected edit command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_skill_install_command() {
+        let cli = Cli::try_parse_from(["jit", "skill", "install"])
+            .expect("skill install command should parse");
+
+        match cli.command {
+            Some(Commands::Skill(args)) => match args.command {
+                SkillCommands::Install(install_args) => {
+                    assert!(install_args.agent.is_none());
+                }
+            },
+            _ => panic!("expected skill install command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_skill_install_with_agent_filter() {
+        let cli = Cli::try_parse_from(["jit", "skill", "install", "--agent", "codex"])
+            .expect("skill install --agent should parse");
+
+        match cli.command {
+            Some(Commands::Skill(args)) => match args.command {
+                SkillCommands::Install(install_args) => {
+                    assert_eq!(install_args.agent.as_deref(), Some("codex"));
+                }
+            },
+            _ => panic!("expected skill install command"),
         }
     }
 

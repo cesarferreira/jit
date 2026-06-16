@@ -134,42 +134,23 @@ jit edit RW-123 --summary "Refine edit flow"
 
 ## Agent Setup
 
-<details>
-<summary>Install the shared <code>SKILL.md</code> into Codex or Claude Code</summary>
-
-The repo ships a shared agent skill in [`SKILL.md`](SKILL.md).
-
-### Codex
+The repo ships a shared agent skill in [`SKILL.md`](SKILL.md). Install or update it for every supported coding agent in one command:
 
 ```bash
-mkdir -p ~/.codex/skills/jit
-wget -O ~/.codex/skills/jit/SKILL.md \
-  https://raw.githubusercontent.com/cesarferreira/jit/refs/heads/main/SKILL.md
+jit skill install
 ```
+
+This downloads the latest `SKILL.md` and writes it to:
+
+- `~/.codex/skills/jit/SKILL.md` (Codex)
+- `~/.claude/skills/jit/SKILL.md` (Claude Code)
+
+Target a specific agent with `--agent`:
 
 ```bash
-mkdir -p ~/.codex/skills/jit
-curl -fsSL \
-  https://raw.githubusercontent.com/cesarferreira/jit/refs/heads/main/SKILL.md \
-  -o ~/.codex/skills/jit/SKILL.md
+jit skill install --agent codex
+jit skill install --agent claude
 ```
-
-### Claude Code
-
-```bash
-mkdir -p ~/.claude/skills/jit
-wget -O ~/.claude/skills/jit/SKILL.md \
-  https://raw.githubusercontent.com/cesarferreira/jit/refs/heads/main/SKILL.md
-```
-
-```bash
-mkdir -p ~/.claude/skills/jit
-curl -fsSL \
-  https://raw.githubusercontent.com/cesarferreira/jit/refs/heads/main/SKILL.md \
-  -o ~/.claude/skills/jit/SKILL.md
-```
-
-</details>
 
 ## Examples
 
@@ -484,6 +465,7 @@ jit --config-file /path/to/config.toml edit RW-123 --summary "Improve edit flow"
 | `jit create ...` | Create a Jira issue, backlog by default |
 | `jit create --current-sprint ...` | Create an issue and add it to the active sprint |
 | `jit edit ...` | Update summary, description, type, or assignee |
+| `jit skill install` | Install or update the shared `SKILL.md` for Codex and Claude Code |
 | `jit --config-file /path/to/config.toml ...` | Use a specific config file |
 
 ## Configuration
