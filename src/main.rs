@@ -194,6 +194,8 @@ struct JiraIssueFields {
     sprint: Option<Vec<JiraSprint>>,
     #[serde(default)]
     description: Option<Value>,
+    #[serde(rename = "customfield_10396", default)]
+    acceptance_criteria: Option<Value>,
     #[serde(default)]
     assignee: Option<JiraUser>,
     #[serde(default)]
@@ -1010,6 +1012,7 @@ fn fetch_jira_issue(
 
     if include_description {
         fields.push("description");
+        fields.push("customfield_10396");
     }
 
     if include_comments {
@@ -2190,6 +2193,20 @@ fn build_issue_json(
                 })
                 .unwrap_or(Value::Null);
             obj.insert("description".to_string(), description);
+
+            let acceptance_criteria = issue
+                .fields
+                .acceptance_criteria
+                .as_ref()
+                .map(|criteria| {
+                    if criteria.is_null() {
+                        Value::Null
+                    } else {
+                        Value::String(adf_value_to_display_text(criteria))
+                    }
+                })
+                .unwrap_or(Value::Null);
+            obj.insert("acceptance_criteria".to_string(), acceptance_criteria);
         }
 
         if include_comments {
@@ -2381,6 +2398,15 @@ fn display_detailed_ticket(
                 }
             }
             None => println!("No description provided."),
+        }
+
+        if let Some(criteria) = &issue.fields.acceptance_criteria {
+            if !criteria.is_null() {
+                println!();
+                println!("{}", "ACCEPTANCE CRITERIA".bold());
+                println!();
+                println!("{}", adf_value_to_display_text(criteria));
+            }
         }
     }
 
@@ -3228,7 +3254,7 @@ user_email = "user@example.com"
 
         assert_eq!(issue.key, "RW-123");
         assert!(request.starts_with("GET /rest/api/3/issue/RW-123?fields="));
-        assert!(request.contains("assignee,comment,created,customfield_10020,description,duedate,issuetype,priority,reporter,status,summary,updated"));
+        assert!(request.contains("assignee,comment,created,customfield_10020,customfield_10396,description,duedate,issuetype,priority,reporter,status,summary,updated"));
     }
 
     #[test]
@@ -3433,6 +3459,7 @@ user_email = "user@example.com"
                     state: "active".to_string(),
                 }]),
                 description: Some(text_to_adf("Hello\nWorld")),
+                acceptance_criteria: None,
                 assignee: Some(JiraUser {
                     display_name: "Cesar Ferreira".to_string(),
                     account_id: Some("account-id-123".to_string()),
@@ -3595,6 +3622,7 @@ user_email = "user@example.com"
                     state: "active".to_string(),
                 }]),
                 description: None,
+                acceptance_criteria: None,
                 assignee: None,
                 reporter: None,
                 priority: None,
@@ -3630,6 +3658,7 @@ user_email = "user@example.com"
                 }),
                 sprint: None,
                 description: None,
+                acceptance_criteria: None,
                 assignee: None,
                 reporter: None,
                 priority: None,
