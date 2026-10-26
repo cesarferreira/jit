@@ -15,6 +15,7 @@ use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use unicode_width::UnicodeWidthStr;
 
 mod api;
 mod discovery;
@@ -1910,9 +1911,7 @@ fn display_tickets_table(
     for ticket in tickets {
         let status_text = ticket.fields.status.as_ref().map_or("Unknown", |s| &s.name);
         let summary = truncate_with_ellipsis(&ticket.fields.summary, 58);
-        let colored_status = get_colored_status(status_text);
-
-        let mut row = vec![ticket.key.clone(), summary, colored_status];
+        let mut row = vec![ticket.key.clone(), summary, status_text.to_string()];
         if let Some(pr_map) = pull_requests_by_key {
             let prs = pr_map
                 .get(&ticket.key)
@@ -1930,19 +1929,7 @@ fn display_tickets_table(
     }
     for row in &table {
         for (i, cell) in row.iter().enumerate() {
-            // For status column with color codes, use the length of the plain text
-            let cell_width = if i == 2 && row[0] != "Key" {
-                // This is a status cell, get the original text length
-                let status_text = tickets
-                    [table.iter().position(|r| &r[0] == &row[0]).unwrap_or(0) - 1]
-                    .fields
-                    .status
-                    .as_ref()
-                    .map_or("Unknown", |s| &s.name);
-                status_text.len()
-            } else {
-                cell.len()
-            };
+            let cell_width = cell.width();
 
             if i < col_widths.len() {
                 col_widths[i] = col_widths[i].max(cell_width + 2);
@@ -1964,25 +1951,13 @@ fn display_tickets_table(
     for (row_idx, row) in table.iter().enumerate() {
         print!("│");
         for (col_idx, cell) in row.iter().enumerate() {
-            let cell_text = if row_idx == 0 {
-                format!(" {:<width$}", cell, width = col_widths[col_idx] - 1)
-            } else if col_idx == 2 {
-                // Add proper spacing for colored status
-                let status_text = tickets[row_idx - 1]
-                    .fields
-                    .status
-                    .as_ref()
-                    .map_or("Unknown", |s| &s.name);
-                format!(
-                    " {}{}",
-                    cell,
-                    " ".repeat(col_widths[col_idx] - status_text.len() - 1)
-                )
+            let cell_text = if row_idx > 0 && col_idx == 2 {
+                get_colored_status(cell)
             } else {
-                format!(" {:<width$}", cell, width = col_widths[col_idx] - 1)
+                cell.clone()
             };
-
-            print!("{}", cell_text);
+            let padding = col_widths[col_idx] - cell.width() - 1;
+            print!(" {}{}", cell_text, " ".repeat(padding));
             print!("│");
         }
         println!();
@@ -2013,15 +1988,24 @@ fn display_tickets_table(
     Ok(())
 }
 
-// Truncate a string to max_len and add ellipsis if needed
+// Truncate to terminal display columns, including the ellipsis.
 fn truncate_with_ellipsis(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
+    if s.width() <= max_len {
         return s.to_string();
     }
+    if max_len <= 3 {
+        return ".".repeat(max_len);
+    }
 
-    let mut result = s.chars().take(max_len - 3).collect::<String>();
-    result.push_str("...");
-    result
+    let mut end = 0;
+    for (index, ch) in s.char_indices() {
+        let next = index + ch.len_utf8();
+        if s[..next].width() > max_len - 3 {
+            break;
+        }
+        end = next;
+    }
+    format!("{}...", &s[..end])
 }
 
 fn extract_pr_id_from_url(url: &str) -> Option<String> {
@@ -3631,6 +3615,15 @@ user_email = "user@example.com"
         let truncated = truncate_with_ellipsis("abcdefghijklmnopqrstuvwxyz", 10);
 
         assert_eq!(truncated, "abcdefg...");
+    }
+
+    #[test]
+    fn truncation_measures_terminal_columns_instead_of_bytes() {
+        assert_eq!(truncate_with_ellipsis("éééé", 4), "éééé");
+        assert_eq!(truncate_with_ellipsis("🌵ab", 4), "🌵ab");
+        assert_eq!(truncate_with_ellipsis("界界界", 5), "界...");
+        assert_eq!(truncate_with_ellipsis("abcdef", 2), "..");
+        assert_eq!(truncate_with_ellipsis("abcdef", 0), "");
     }
 
     #[test]
