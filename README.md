@@ -2,7 +2,7 @@
 
 # jit
 
-Jira CLI for ticket lookup, detailed issue inspection, sprint views, and creating or editing issues from the terminal.
+Jira CLI for ticket lookup, JQL search, sprint views, and creating, editing, or managing issues from the terminal.
 
 [![Crates.io](https://img.shields.io/crates/v/jit-cli.svg)](https://crates.io/crates/jit-cli)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -268,6 +268,8 @@ jit --show --include-prs ISSUE-123
 jit --json --include-prs ISSUE-123
 ```
 
+When an issue response contains only part of its comment history, `jit` fetches the remaining pages before applying comment date filters and limits.
+
 ### Current sprint tickets
 
 No arguments defaults to your current sprint tickets:
@@ -284,7 +286,7 @@ jit --my-tickets --include-prs
 jit --my-tickets --limit 5
 ```
 
-The current sprint view fetches up to 50 tickets by default. Use `--limit` to narrow or expand the result set.
+The current sprint view fetches up to 50 tickets by default. Use `--limit` to narrow or expand the result set. `jit --my-tickets --json` returns the same paginated `{ "issues": [], "truncated": false }` envelope as `search`; `truncated: true` means more matching issues exist beyond the limit.
 
 Example output:
 
@@ -301,6 +303,53 @@ Current Sprint: Development Sprint 27
 | PROJ-125  | Update API documentation         | Done              |
 +-----------+----------------------------------+-------------------+
 ```
+
+### Search issues with JQL
+
+```bash
+jit search --jql 'project = RW AND statusCategory != Done ORDER BY updated DESC'
+jit search --jql 'assignee = currentUser()' --limit 100 --json
+```
+
+Search follows Jira pagination up to `--limit` (50 by default). JSON returns an object with `issues` and `truncated`; check `truncated` before treating the result as complete.
+
+### Discover boards and sprints
+
+```bash
+jit boards --project RW --json
+jit sprints --board 123 --state active --json
+jit sprints --board 123 --state active,future --json
+```
+
+Omit `--project` to list accessible boards. Sprint state accepts `active`, `future`, `closed`, or a comma-separated combination. Use the returned board ID with creation or `edit --current-sprint --board ID`.
+
+### Transition, comment, and link issues
+
+List available transitions before changing status. `--to` accepts a transition name or ID:
+
+```bash
+jit transitions RW-123 --json
+jit transition RW-123 --to 'In Progress' --json
+```
+
+The CLI does not supply transition-specific required fields such as resolution; Jira validation errors are surfaced if a transition requires them.
+
+Add a comment inline, from a UTF-8 file, or from standard input. Choose exactly one body source:
+
+```bash
+jit comment RW-123 --body 'Verified the fix locally.' --json
+jit comment RW-123 --body-file /path/to/comment.txt
+printf '%s' 'Verified the fix locally.' | jit comment RW-123 --body-file -
+```
+
+Create a dependency or use another Jira issue-link type by name or ID:
+
+```bash
+jit link RW-123 --blocks RW-456 --json
+jit link RW-123 --to RW-456 --type 'Relates' --json
+```
+
+`--blocks` means the source issue blocks the target issue. The generic form makes the source display the link type's outward relationship to the target.
 
 ### Create tickets
 
@@ -421,7 +470,7 @@ jit edit RW-123 --summary "Ready for this sprint" --current-sprint --json
 
 Sprint selection matches `create --current-sprint`: without `--board`, use the most recently started active sprint on accessible Scrum boards for the ticket's project. `--board` requires `--current-sprint`. No duplicate issue is created, and sprint-only edits do not change core fields or the assignee.
 
-Sprint resolution happens before any changes. For combined edits, core fields are saved first, then the issue is moved. If moving fails, the command exits unsuccessfully and reports that core fields were updated; those changes are not rolled back. A core-field failure prevents the sprint move. Failed commands report errors on stderr, including with `--json`, and emit no success JSON.
+Sprint resolution happens before any changes. For combined edits, core fields are saved first, then the issue is moved. If moving fails, the command exits unsuccessfully and reports that core fields were updated; those changes are not rolled back. A core-field failure prevents the sprint move. Failed commands report errors on stderr and emit no success JSON; `--json` formats the error as JSON with any completed operations.
 
 Successful sprint edits include `sprint`, `sprint_id`, `board`, and `board_id` in JSON, with `"sprint"` in `updated_fields`. These describe the sprint assignment accepted by Jira.
 
@@ -442,6 +491,22 @@ URL:      https://your-company.atlassian.net/browse/RW-123
 
 `jit edit` updates only the fields you pass. It works for Task issues as well as other Jira issue types. `--description ''` clears the description, and `--assignee unassigned` clears the assignee.
 
+### Read descriptions from files or standard input
+
+Both `create` and `edit` accept `--description-file PATH`; use `-` for standard input. It conflicts with `--description`:
+
+```bash
+jit create --project RW --summary 'Improve validation' --description-file /path/to/description.txt
+jit edit RW-123 --description-file /path/to/description.txt
+printf '%s' 'Updated details' | jit edit RW-123 --description-file -
+```
+
+### JSON success and error handling
+
+Noninteractive query, issue, and discovery commands support `--json`, including top-level `jit --json COMMAND ...`. Their successes write JSON only to stdout. Interactive `auth` and skill installation retain their own output formats. Failures exit nonzero and write a JSON error object to stderr with `error.code`, `error.message`, `error.ticket`, and `error.completed_operations`. The ticket is available when known; completed operations are an array.
+
+For create/edit partial failures, inspect the ticket and completed operations before retrying. `created` means the issue already exists: retry its sprint assignment with `jit edit KEY --current-sprint`, adding the original `--board` when applicable. `core_fields_updated` means the edit was saved before the sprint move failed: retry only the move. These operations are not rolled back, and failures emit no success JSON.
+
 ### Use a specific config file
 
 ```bash
@@ -461,6 +526,14 @@ jit --config-file /path/to/config.toml edit RW-123 --summary "Improve edit flow"
 | `jit --show ISSUE-123` | Show detailed ticket fields in a table |
 | `jit --show --full ISSUE-123` | Include description, comments, pull requests, and metadata |
 | `jit --my-tickets` | List current sprint tickets assigned to you |
+| `jit search --jql '...'` | Search issues with pagination and a result limit |
+| `jit boards [--project KEY]` | List accessible boards |
+| `jit sprints --board ID [--state active,future]` | List board sprints |
+| `jit transitions KEY` | List available status transitions |
+| `jit transition KEY --to NAME_OR_ID` | Apply an available transition |
+| `jit comment KEY --body TEXT` | Add a comment; `--body-file PATH` also accepts `-` for stdin |
+| `jit link SOURCE --blocks TARGET` | Mark the source as blocking the target |
+| `jit link SOURCE --to TARGET --type NAME_OR_ID` | Create a Jira issue link |
 | `jit create ...` | Create an issue assigned to you in the current sprint |
 | `jit create --backlog ...` | Create an issue without sprint assignment |
 | `jit create --current-sprint ...` | Create an issue and add it to the active sprint |
@@ -498,6 +571,15 @@ base_url = "https://your-company.atlassian.net"
 api_token = "your_api_token_here"
 user_email = "your_email@example.com"
 ```
+
+Optional `[jira]` settings select custom fields for reading sprint and acceptance criteria across Jira installations:
+
+```toml
+sprint_field = "customfield_10020"
+acceptance_criteria_field = "customfield_10396"
+```
+
+These are the backward-compatible defaults. Set the field IDs used by your Jira instance. Refreshing credentials with `jit auth` preserves these field overrides.
 
 ## Development
 
