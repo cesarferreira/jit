@@ -125,7 +125,7 @@ jit --show --full ISSUE-123
 # Current sprint tickets assigned to you
 jit --my-tickets
 
-# Create a backlog ticket
+# Create a ticket assigned to you in the current sprint
 jit create --project RW --summary "Improve ticket creation flow"
 
 # Edit an existing issue
@@ -302,9 +302,9 @@ Current Sprint: Development Sprint 27
 +-----------+----------------------------------+-------------------+
 ```
 
-### Create backlog tickets
+### Create tickets
 
-Create a basic backlog task:
+New tickets default to the authenticated Jira user (`--assignee me`) and the current active sprint:
 
 ```bash
 jit create --project RW --summary "Improve ticket creation flow"
@@ -316,27 +316,15 @@ Create with explicit type and description:
 jit create \
   --project RW \
   --type Story \
-  --summary "Support backlog ticket creation" \
+  --summary "Support ticket creation" \
   --description $'Add a create command\nCover it with tests'
 ```
 
-Create with a specific assignee:
+Override the assignee or leave the ticket unassigned:
 
 ```bash
-jit create \
-  --project RW \
-  --type Bug \
-  --assignee 5b10a2844c20165700ede21g \
-  --summary "Fix backlog create validation"
-```
-
-Leave the ticket unassigned:
-
-```bash
-jit create \
-  --project RW \
-  --assignee unassigned \
-  --summary "Triage backlog item without owner yet"
+jit create --project RW --assignee 5b10a2844c20165700ede21g --summary "Fix validation"
+jit create --project RW --assignee unassigned --summary "Triage item without an owner"
 ```
 
 Return the created issue as JSON:
@@ -344,8 +332,6 @@ Return the created issue as JSON:
 ```bash
 jit create --project RW --summary "Improve ticket creation flow" --json
 ```
-
-By default, `jit create` assigns the issue to the current Jira user with `--assignee me` and leaves it out of a sprint, which is what puts it in the backlog on Scrum boards.
 
 Example output:
 
@@ -355,32 +341,31 @@ Project:  RW
 Type:     Task
 Assignee: Cesar Ferreira
 Summary:  Improve ticket creation flow
-Backlog:  Yes (created without sprint assignment)
+Board:    RW board
+Sprint:   RW Sprint 42
+Backlog:  No (added to current sprint)
 URL:      https://your-company.atlassian.net/browse/RW-123
 ```
 
-### Create tickets in the current sprint
+### Create backlog tickets
 
-Create directly in the active sprint:
-
-```bash
-jit create \
-  --project RW \
-  --current-sprint \
-  --summary "Deliver current sprint ticket creation"
-```
-
-Target a specific board:
+Pass `--backlog` explicitly to create without sprint assignment. The assignee still defaults to you:
 
 ```bash
-jit create \
-  --project RW \
-  --current-sprint \
-  --board 123 \
-  --summary "Use the board's active sprint"
+jit create --project RW --backlog --summary "Save for later"
 ```
 
-When `--current-sprint` is set, `jit` resolves the active sprint through Jira Software and adds the new issue after creation. If you do not pass `--board`, `jit` checks accessible Scrum boards for the project and uses the active sprint with the most recent `startDate`.
+`--backlog` conflicts with `--current-sprint` and `--board`.
+
+### Select the current sprint
+
+Without `--backlog`, `jit` resolves the active sprint through Jira Software before creating the issue, then adds it to that sprint. It checks accessible Scrum boards for the project and uses the active sprint with the most recent `startDate`. Pass `--board` to select a specific board:
+
+```bash
+jit create --project RW --board 123 --summary "Use the board's active sprint"
+```
+
+`--current-sprint` remains supported as an explicit spelling of the default. If no active sprint is found, no issue is created; select another board, start a sprint in Jira, or pass `--backlog`. If creation succeeds but sprint assignment fails, the command reports the created ticket key so you can retry with `jit edit ISSUE-123 --current-sprint` instead of creating a duplicate.
 
 ### Edit existing tickets
 
@@ -426,6 +411,20 @@ Use the current Jira user as assignee:
 jit edit RW-123 --assignee me
 ```
 
+Move an existing ticket into the current sprint (ticket URLs also work):
+
+```bash
+jit edit RW-123 --current-sprint
+jit edit https://your-company.atlassian.net/browse/RW-123 --current-sprint --board 123
+jit edit RW-123 --summary "Ready for this sprint" --current-sprint --json
+```
+
+Sprint selection matches `create --current-sprint`: without `--board`, use the most recently started active sprint on accessible Scrum boards for the ticket's project. `--board` requires `--current-sprint`. No duplicate issue is created, and sprint-only edits do not change core fields or the assignee.
+
+Sprint resolution happens before any changes. For combined edits, core fields are saved first, then the issue is moved. If moving fails, the command exits unsuccessfully and reports that core fields were updated; those changes are not rolled back. A core-field failure prevents the sprint move. Failed commands report errors on stderr, including with `--json`, and emit no success JSON.
+
+Successful sprint edits include `sprint`, `sprint_id`, `board`, and `board_id` in JSON, with `"sprint"` in `updated_fields`. These describe the sprint assignment accepted by Jira.
+
 Return update results as JSON:
 
 ```bash
@@ -462,9 +461,10 @@ jit --config-file /path/to/config.toml edit RW-123 --summary "Improve edit flow"
 | `jit --show ISSUE-123` | Show detailed ticket fields in a table |
 | `jit --show --full ISSUE-123` | Include description, comments, pull requests, and metadata |
 | `jit --my-tickets` | List current sprint tickets assigned to you |
-| `jit create ...` | Create a Jira issue, backlog by default |
+| `jit create ...` | Create an issue assigned to you in the current sprint |
+| `jit create --backlog ...` | Create an issue without sprint assignment |
 | `jit create --current-sprint ...` | Create an issue and add it to the active sprint |
-| `jit edit ...` | Update summary, description, type, or assignee |
+| `jit edit ...` | Update summary, description, type, assignee, or current sprint |
 | `jit skill install` | Install or update the shared `SKILL.md` for Codex and Claude Code |
 | `jit --config-file /path/to/config.toml ...` | Use a specific config file |
 

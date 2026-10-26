@@ -331,6 +331,174 @@ fn create_current_sprint_json_runs_full_creation_flow() {
 }
 
 #[test]
+fn create_defaults_to_current_user_and_current_sprint() {
+    let (server, requests) = spawn_sequence_server(vec![
+        (
+            "HTTP/1.1 200 OK",
+            r#"{"accountId":"current-account","displayName":"Current user"}"#,
+        ),
+        (
+            "HTTP/1.1 200 OK",
+            r#"{"values":[{"id":42,"name":"Project board"}],"isLast":true}"#,
+        ),
+        SPRINT_RESPONSE,
+        ("HTTP/1.1 201 Created", r#"{"id":"10001","key":"RW-123"}"#),
+        ("HTTP/1.1 204 No Content", ""),
+    ]);
+    let config = TempConfig::new(&server.base_url);
+    let output = run_jit([
+        "--config-file",
+        config.path_str(),
+        "create",
+        "--project",
+        "RW",
+        "--summary",
+        "Default ticket",
+        "--json",
+    ]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let payload: Value = serde_json::from_str(&stdout(&output)).unwrap();
+    assert_eq!(payload["assignee"], "Current user");
+    assert_eq!(payload["sprint"], "Board Sprint");
+    assert_eq!(payload["backlog"], false);
+    let captured = collect_requests(&requests, 5);
+    assert!(captured[0].starts_with("GET /rest/api/3/myself HTTP"));
+    assert!(captured[1].contains("projectKeyOrId=RW"));
+    assert!(captured[3].starts_with("POST /rest/api/3/issue HTTP"));
+    let body: Value = serde_json::from_str(request_body(&captured[3])).unwrap();
+    assert_eq!(body["fields"]["assignee"]["id"], "current-account");
+    assert!(captured[4].starts_with("POST /rest/agile/1.0/sprint/300/issue HTTP"));
+    server.join();
+}
+
+#[test]
+fn create_backlog_skips_sprint_and_preserves_assignee_choices() {
+    for assignee in ["me", "unassigned", "another-account"] {
+        let mut responses = vec![];
+        if assignee == "me" {
+            responses.push((
+                "HTTP/1.1 200 OK",
+                r#"{"accountId":"current-account","displayName":"Current user"}"#,
+            ));
+        }
+        responses.push(("HTTP/1.1 201 Created", r#"{"id":"10001","key":"RW-123"}"#));
+        let (server, requests) = spawn_sequence_server(responses);
+        let config = TempConfig::new(&server.base_url);
+        let output = run_jit([
+            "--config-file",
+            config.path_str(),
+            "create",
+            "--project",
+            "RW",
+            "--summary",
+            "Backlog ticket",
+            "--backlog",
+            "--assignee",
+            assignee,
+            "--json",
+        ]);
+        assert!(output.status.success(), "{}", stderr(&output));
+        let payload: Value = serde_json::from_str(&stdout(&output)).unwrap();
+        assert_eq!(payload["backlog"], true);
+        assert!(payload.get("sprint").is_none());
+        let captured = collect_requests(&requests, if assignee == "me" { 2 } else { 1 });
+        let request = captured.last().unwrap();
+        assert!(request.starts_with("POST /rest/api/3/issue HTTP"));
+        let body: Value = serde_json::from_str(request_body(request)).unwrap();
+        match assignee {
+            "me" => assert_eq!(body["fields"]["assignee"]["id"], "current-account"),
+            "unassigned" => assert!(body["fields"].get("assignee").is_none()),
+            _ => assert_eq!(body["fields"]["assignee"]["id"], "another-account"),
+        }
+        server.join();
+    }
+}
+
+#[test]
+fn create_board_selects_default_sprint_without_current_sprint_flag() {
+    let (server, requests) = spawn_sequence_server(vec![
+        BOARD_RESPONSE,
+        SPRINT_RESPONSE,
+        ("HTTP/1.1 201 Created", r#"{"id":"10001","key":"RW-123"}"#),
+        ("HTTP/1.1 204 No Content", ""),
+    ]);
+    let config = TempConfig::new(&server.base_url);
+    let output = run_jit([
+        "--config-file",
+        config.path_str(),
+        "create",
+        "--project",
+        "RW",
+        "--summary",
+        "Board ticket",
+        "--board",
+        "42",
+        "--assignee",
+        "unassigned",
+        "--json",
+    ]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let payload: Value = serde_json::from_str(&stdout(&output)).unwrap();
+    assert_eq!(payload["sprint"], "Board Sprint");
+    assert_eq!(payload["backlog"], false);
+    let captured = collect_requests(&requests, 4);
+    assert!(captured[0].starts_with("GET /rest/agile/1.0/board/42 HTTP"));
+    assert!(captured[3].starts_with("POST /rest/agile/1.0/sprint/300/issue HTTP"));
+    server.join();
+}
+
+#[test]
+fn create_without_active_sprint_fails_before_creating_ticket() {
+    let (server, requests) = spawn_sequence_server(vec![
+        (
+            "HTTP/1.1 200 OK",
+            r#"{"values":[{"id":42,"name":"Project board"}],"isLast":true}"#,
+        ),
+        ("HTTP/1.1 200 OK", r#"{"values":[],"isLast":true}"#),
+    ]);
+    let config = TempConfig::new(&server.base_url);
+    let output = run_jit([
+        "--config-file",
+        config.path_str(),
+        "create",
+        "--project",
+        "RW",
+        "--summary",
+        "Do not create",
+        "--assignee",
+        "unassigned",
+    ]);
+    assert!(!output.status.success());
+    let error = stderr(&output);
+    assert!(error.contains("No active sprint"), "{error}");
+    assert!(error.contains("--backlog"), "{error}");
+    assert_eq!(collect_requests(&requests, 2).len(), 2);
+    server.join();
+}
+
+#[test]
+fn create_backlog_conflicts_with_sprint_options() {
+    for option in [vec!["--current-sprint"], vec!["--board", "42"]] {
+        let mut args = vec![
+            "create",
+            "--project",
+            "RW",
+            "--summary",
+            "Invalid",
+            "--backlog",
+        ];
+        args.extend(option);
+        let output = run_jit(args);
+        assert!(!output.status.success());
+        assert!(
+            stderr(&output).contains("cannot be used with"),
+            "{}",
+            stderr(&output)
+        );
+    }
+}
+
+#[test]
 fn edit_json_updates_requested_fields() {
     let (server, requests) = spawn_sequence_server(vec![("HTTP/1.1 204 No Content", "")]);
     let config = TempConfig::new(&server.base_url);
@@ -376,6 +544,197 @@ fn edit_json_updates_requested_fields() {
     assert_eq!(body_json["fields"]["assignee"], Value::Null);
 
     server.join();
+}
+
+const BOARD_RESPONSE: (&str, &str) = ("HTTP/1.1 200 OK", r#"{"id":42,"name":"Explicit board"}"#);
+const SPRINT_RESPONSE: (&str, &str) = (
+    "HTTP/1.1 200 OK",
+    r#"{"values":[{"id":300,"name":"Board Sprint","startDate":"2026-04-01T09:00:00+00:00"}],"isLast":true}"#,
+);
+
+#[test]
+fn edit_current_sprint_only_uses_board_and_reports_json_for_key_and_url() {
+    for ticket in ["RW-123", "https://company.atlassian.net/browse/RW-123"] {
+        let (server, requests) = spawn_sequence_server(vec![
+            BOARD_RESPONSE,
+            SPRINT_RESPONSE,
+            ("HTTP/1.1 204 No Content", ""),
+        ]);
+        let config = TempConfig::new(&server.base_url);
+        let output = run_jit([
+            "--config-file",
+            config.path_str(),
+            "edit",
+            ticket,
+            "--current-sprint",
+            "--board",
+            "42",
+            "--json",
+        ]);
+        assert!(output.status.success(), "stderr: {}", stderr(&output));
+        let payload: Value = serde_json::from_str(&stdout(&output)).unwrap();
+        assert_eq!(payload["ticket"], "RW-123");
+        assert_eq!(payload["sprint"], "Board Sprint");
+        assert_eq!(payload["sprint_id"], 300);
+        assert_eq!(payload["board"], "Explicit board");
+        assert_eq!(payload["board_id"], 42);
+        assert_eq!(payload["updated_fields"], serde_json::json!(["sprint"]));
+        let captured = collect_requests(&requests, 3);
+        assert!(captured[0].starts_with("GET /rest/agile/1.0/board/42 HTTP"));
+        assert!(captured[2].starts_with("POST /rest/agile/1.0/sprint/300/issue HTTP"));
+        assert_eq!(
+            serde_json::from_str::<Value>(request_body(&captured[2])).unwrap(),
+            serde_json::json!({"issues":["RW-123"]})
+        );
+        server.join();
+    }
+}
+
+#[test]
+fn edit_current_sprint_resolves_project_and_combines_core_fields() {
+    let (server, requests) = spawn_sequence_server(vec![
+        (
+            "HTTP/1.1 200 OK",
+            r#"{"values":[{"id":42,"name":"Project board"}],"isLast":true}"#,
+        ),
+        SPRINT_RESPONSE,
+        ("HTTP/1.1 204 No Content", ""),
+        ("HTTP/1.1 204 No Content", ""),
+    ]);
+    let config = TempConfig::new(&server.base_url);
+    let output = run_jit([
+        "--config-file",
+        config.path_str(),
+        "edit",
+        "RW-123",
+        "--current-sprint",
+        "--summary",
+        "Updated summary",
+        "--json",
+    ]);
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let payload: Value = serde_json::from_str(&stdout(&output)).unwrap();
+    assert_eq!(payload["summary"], "Updated summary");
+    assert_eq!(payload["sprint"], "Board Sprint");
+    assert_eq!(
+        payload["updated_fields"],
+        serde_json::json!(["summary", "sprint"])
+    );
+    let captured = collect_requests(&requests, 4);
+    assert!(captured[0].contains("projectKeyOrId=RW"));
+    assert!(captured[2].starts_with("PUT /rest/api/3/issue/RW-123 HTTP"));
+    assert_eq!(
+        serde_json::from_str::<Value>(request_body(&captured[2])).unwrap(),
+        serde_json::json!({"fields":{"summary":"Updated summary"}})
+    );
+    assert!(captured[3].starts_with("POST /rest/agile/1.0/sprint/300/issue HTTP"));
+    server.join();
+}
+
+#[test]
+fn edit_current_sprint_failure_reports_whether_fields_were_saved() {
+    for combined in [false, true] {
+        let mut responses = vec![BOARD_RESPONSE, SPRINT_RESPONSE];
+        if combined {
+            responses.push(("HTTP/1.1 204 No Content", ""));
+        }
+        responses.push((
+            "HTTP/1.1 403 Forbidden",
+            r#"{"errorMessages":["Sprint permission denied"]}"#,
+        ));
+        let (server, requests) = spawn_sequence_server(responses);
+        let config = TempConfig::new(&server.base_url);
+        let mut args = vec![
+            "--config-file",
+            config.path_str(),
+            "edit",
+            "RW-123",
+            "--current-sprint",
+            "--board",
+            "42",
+            "--json",
+        ];
+        if combined {
+            args.extend(["--summary", "Updated summary"]);
+        }
+        let output = run_jit(args);
+        assert!(!output.status.success());
+        assert!(stdout(&output).is_empty());
+        let error = stderr(&output);
+        assert!(
+            error.contains("failed to add RW-123 to sprint Board Sprint"),
+            "{error}"
+        );
+        assert!(error.contains("Sprint permission denied"), "{error}");
+        assert_eq!(error.contains("Updated core fields"), combined, "{error}");
+        assert_eq!(
+            collect_requests(&requests, if combined { 4 } else { 3 }).len(),
+            if combined { 4 } else { 3 }
+        );
+        server.join();
+    }
+}
+
+#[test]
+fn edit_current_sprint_no_active_sprint_does_not_update_fields() {
+    let (server, requests) = spawn_sequence_server(vec![
+        BOARD_RESPONSE,
+        ("HTTP/1.1 200 OK", r#"{"values":[],"isLast":true}"#),
+    ]);
+    let config = TempConfig::new(&server.base_url);
+    let output = run_jit([
+        "--config-file",
+        config.path_str(),
+        "edit",
+        "RW-123",
+        "--current-sprint",
+        "--board",
+        "42",
+        "--summary",
+        "Do not save",
+    ]);
+    assert!(!output.status.success());
+    let error = stderr(&output);
+    assert!(error.contains("No active sprint"), "{error}");
+    assert!(error.contains("--board"), "{error}");
+    assert_eq!(collect_requests(&requests, 2).len(), 2);
+    server.join();
+}
+
+#[test]
+fn edit_current_sprint_core_update_failure_does_not_move_issue() {
+    let (server, requests) = spawn_sequence_server(vec![
+        BOARD_RESPONSE,
+        SPRINT_RESPONSE,
+        (
+            "HTTP/1.1 400 Bad Request",
+            r#"{"errorMessages":["Invalid summary"]}"#,
+        ),
+    ]);
+    let config = TempConfig::new(&server.base_url);
+    let output = run_jit([
+        "--config-file",
+        config.path_str(),
+        "edit",
+        "RW-123",
+        "--current-sprint",
+        "--board",
+        "42",
+        "--summary",
+        "Invalid",
+    ]);
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("Invalid summary"));
+    let captured = collect_requests(&requests, 3);
+    assert!(captured[2].starts_with("PUT /rest/api/3/issue/RW-123 HTTP"));
+    server.join();
+}
+
+#[test]
+fn edit_board_requires_current_sprint() {
+    let output = run_jit(["edit", "RW-123", "--board", "42"]);
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("--current-sprint"));
 }
 
 #[test]

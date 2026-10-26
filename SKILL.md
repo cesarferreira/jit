@@ -67,11 +67,12 @@ jit --my-tickets
 jit --my-tickets --include-prs
 jit --my-tickets --limit 5
 ```
-8. Create a backlog issue:
+8. Create an issue (assigned to the authenticated Jira user in the current sprint by default):
 ```bash
 jit create --project RW --summary "Improve ticket creation flow"
-jit create --project RW --type Story --summary "Support backlog ticket creation" --description $'Add a create command\nCover it with tests'
-jit create --project RW --type Bug --assignee 5b10a2844c20165700ede21g --summary "Fix backlog create validation"
+jit create --project RW --backlog --type Story --summary "Support backlog ticket creation" --description $'Add a create command\nCover it with tests'
+jit create --project RW --backlog --type Bug --assignee 5b10a2844c20165700ede21g --summary "Fix backlog create validation"
+jit create --project RW --backlog --summary "Save for later"
 jit create --project RW --current-sprint --summary "Deliver current sprint ticket creation"
 jit create --project RW --current-sprint --board 123 --summary "Use the board's active sprint"
 jit create --project RW --summary "Improve ticket creation flow" --json
@@ -84,6 +85,9 @@ jit edit RW-123 --description ''
 jit edit RW-123 --type Bug --assignee unassigned
 jit edit RW-123 --type Task --summary "Refine task summary"
 jit edit RW-123 --assignee me
+jit edit RW-123 --current-sprint
+jit edit RW-123 --current-sprint --board 123
+jit edit https://your-company.atlassian.net/browse/RW-123 --current-sprint --json
 jit edit RW-123 --summary "Improve edit flow" --json
 ```
 10. Use a specific config file:
@@ -111,10 +115,10 @@ jit --config-file /path/to/config.toml edit RW-123 --summary "Improve edit flow"
 2. Normalize input:
 - If the user provides a Jira URL, pass it directly to `jit`.
 - If the user provides a ticket key, pass the key directly.
-- If the user wants a new backlog item, gather `--project` and `--summary`; add `--type` and `--description` when provided.
-- If the user wants to edit an issue or task, gather the ticket key/URL and whichever of `--summary`, `--description`, `--type`, and `--assignee` they want to change.
-- Default `--assignee` to `me` unless the user asks for someone else or wants it left unassigned.
-- If the user wants the new issue in the current sprint, add `--current-sprint`; optionally add `--board <id>` when the board is known.
+- For new tickets, gather `--project` and `--summary`; add `--type` and `--description` when provided. Default to the current sprint. Add `--backlog` only when the user explicitly requests the backlog.
+- If the user wants to edit an issue or task, gather the ticket key/URL and whichever of `--summary`, `--description`, `--type`, `--assignee`, and `--current-sprint` they want to change.
+- For creation, default `--assignee` to `me` unless the user asks for someone else or wants it left unassigned. For edits, pass `--assignee` only when requested.
+- Creation defaults to the current sprint; `--current-sprint` is optional. For existing issues, add `edit --current-sprint` only when a sprint move is requested. Optionally add `--board <id>` when the board is known.
 3. Select output mode:
 - Default for human-readable summary
 - `--text` for one-line output
@@ -123,9 +127,10 @@ jit --config-file /path/to/config.toml edit RW-123 --summary "Improve edit flow"
 - `--full` for metadata + description + comments + pull requests
 - `--include-prs` to include linked GitHub pull requests
 - `--since YYYY-MM-DD` to filter comment history
-- `create` to create a new Jira issue without sprint assignment so it lands in the backlog on scrum boards
+- `create` assigns new issues to the authenticated Jira user (`me`) in the current active sprint by default. `--backlog` explicitly skips sprint assignment and conflicts with `--current-sprint` and `--board`. Do not silently fall back to backlog when no active sprint is available.
 - `--assignee me` resolves to the current Jira user; other values are treated as Jira account IDs; `unassigned` skips assignee
-- `--current-sprint` adds the new issue to an active sprint after creation; if no board is supplied, use the accessible Scrum board whose active sprint has the most recent `startDate`
+- `--current-sprint` adds the new or existing issue to an active sprint; if no board is supplied, use the accessible Scrum board whose active sprint has the most recent `startDate`
+- `edit --current-sprint` moves the existing issue without creating a duplicate; it accepts sprint-only edits and optional `--board <id>`. It derives the project from the ticket key. Resolve the sprint before any changes; combined edits save core fields before moving. A failed move exits unsuccessfully and explicitly reports saved core fields, without rollback or success JSON. Successful JSON includes `sprint`, `sprint_id`, `board`, `board_id`, and `"sprint"` in `updated_fields`.
 - `edit` updates only the fields explicitly passed; it works for Jira tasks as well as other issue types, `--description ''` clears the description, and `--assignee unassigned` clears the assignee
 4. Execute command and return:
 - The command used
@@ -154,8 +159,11 @@ jit --config-file /path/to/config.toml edit RW-123 --summary "Improve edit flow"
 - Fix: verify the project key, issue type name, assignee account ID, and whether the Jira project requires additional custom fields on create
 7. Current sprint resolution failed:
 - Symptom: no active sprint found, or the wrong board was selected for `--current-sprint`
-- Fix: pass `--board <id>` explicitly, or create without `--current-sprint` if the issue should stay in the backlog
-8. Edit command rejected by Jira:
+- Fix: pass `--board <id>` explicitly or start a sprint in Jira. For creation, use `--backlog` only if the user requests backlog placement; omitting `--current-sprint` still targets the sprint. For edits, omit `--current-sprint` if no sprint move is wanted.
+8. Partial creation failure:
+- Symptom: the issue was created but could not be added to the sprint
+- Fix: use the ticket key reported by the error with `jit edit ISSUE-123 --current-sprint` (and optional `--board`); do not repeat creation and make a duplicate
+9. Edit command rejected by Jira:
 - Symptom: `JIRA API request failed with status ...` during `jit edit`
 - Fix: verify the issue key, edited field values, assignee account ID, and whether the Jira project restricts issue type or assignee transitions
 

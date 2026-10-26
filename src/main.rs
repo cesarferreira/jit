@@ -32,9 +32,9 @@ struct Cli {
 enum Commands {
     /// Configure Jira credentials interactively
     Auth,
-    /// Create a new Jira issue without sprint assignment so it lands in the backlog on scrum boards
+    /// Create a Jira issue assigned to you in the current sprint by default
     Create(CreateArgs),
-    /// Edit an existing Jira ticket's core fields, including Task issues
+    /// Edit an existing Jira ticket's fields or move it into the current sprint
     Edit(EditArgs),
     /// Manage the shared jit agent skill (SKILL.md) installed for coding agents like Codex and Claude Code
     Skill(SkillArgs),
@@ -139,12 +139,16 @@ struct CreateArgs {
     #[clap(long, default_value = "me")]
     assignee: String,
 
-    /// Add the created ticket to the current active sprint instead of leaving it in the backlog
-    #[clap(long)]
+    /// Add the created ticket to the current active sprint (the default)
+    #[clap(long, conflicts_with = "backlog")]
     current_sprint: bool,
 
+    /// Leave the created ticket in the backlog without sprint assignment
+    #[clap(long, conflicts_with_all = ["current_sprint", "board"])]
+    backlog: bool,
+
     /// Jira board ID to use for current sprint selection; otherwise the most recently started active sprint is used
-    #[clap(long, requires = "current_sprint")]
+    #[clap(long, conflicts_with = "backlog")]
     board: Option<u64>,
 
     /// Output created issue details in JSON format
@@ -172,6 +176,14 @@ struct EditArgs {
     /// Updated assignee account ID, or `me` / `unassigned`
     #[clap(long)]
     assignee: Option<String>,
+
+    /// Move the existing ticket into the current active sprint
+    #[clap(long)]
+    current_sprint: bool,
+
+    /// Jira board ID to use for current sprint selection; otherwise the most recently started active sprint is used
+    #[clap(long, requires = "current_sprint")]
+    board: Option<u64>,
 
     /// Output updated issue details in JSON format
     #[clap(long)]
@@ -785,7 +797,9 @@ fn mask_token(token: &str) -> String {
 
 fn run_create_issue_command(client: &Client, jira_base_url: &str, args: &CreateArgs) -> Result<()> {
     let resolved_assignee = resolve_create_assignee(client, jira_base_url, &args.assignee)?;
-    let resolved_sprint = resolve_target_sprint(client, jira_base_url, args)?;
+    let resolved_sprint = resolve_target_sprint(client, jira_base_url, args).context(
+        "Could not select the current sprint. Pass --board <id> to select a board or --backlog to create without sprint assignment.",
+    )?;
     let created_issue = create_jira_issue(
         client,
         jira_base_url,
@@ -842,31 +856,55 @@ fn run_create_issue_command(client: &Client, jira_base_url: &str, args: &CreateA
 }
 
 fn run_edit_issue_command(client: &Client, jira_base_url: &str, args: &EditArgs) -> Result<()> {
-    if args.summary.is_none()
-        && args.description.is_none()
-        && args.issue_type.is_none()
-        && args.assignee.is_none()
-    {
+    let has_core_edits = args.summary.is_some()
+        || args.description.is_some()
+        || args.issue_type.is_some()
+        || args.assignee.is_some();
+    if !has_core_edits && !args.current_sprint {
         return Err(anyhow!(
-            "No editable fields provided. Pass at least one of --summary, --description, --type, or --assignee."
+            "No editable fields provided. Pass at least one of --summary, --description, --type, --assignee, or --current-sprint."
         ));
     }
 
     let ticket_id = extract_ticket_id(&args.ticket)?;
+    let resolved_sprint = resolve_current_sprint(
+        client,
+        jira_base_url,
+        ticket_id
+            .split_once('-')
+            .map_or(ticket_id.as_str(), |(project, _)| project),
+        args.current_sprint,
+        args.board,
+    )?;
     let resolved_assignee = args
         .assignee
         .as_deref()
         .map(|assignee| resolve_create_assignee(client, jira_base_url, assignee))
         .transpose()?;
-    update_jira_issue(
-        client,
-        jira_base_url,
-        &ticket_id,
-        args,
-        resolved_assignee
-            .as_ref()
-            .and_then(|assignee| assignee.account_id.as_deref()),
-    )?;
+    if has_core_edits {
+        update_jira_issue(
+            client,
+            jira_base_url,
+            &ticket_id,
+            args,
+            resolved_assignee
+                .as_ref()
+                .and_then(|assignee| assignee.account_id.as_deref()),
+        )?;
+    }
+    if let Some(sprint) = resolved_sprint.as_ref() {
+        add_issue_to_sprint(client, jira_base_url, sprint.id, &ticket_id).with_context(|| {
+            let prefix = if has_core_edits {
+                "Updated core fields, but "
+            } else {
+                ""
+            };
+            format!(
+                "{}failed to add {} to sprint {}. Retry with jit edit {} --current-sprint --board {}.",
+                prefix, ticket_id, sprint.name, ticket_id, sprint.board_id
+            )
+        })?;
+    }
 
     let issue_url = format!("{}/browse/{}", jira_base_url, ticket_id);
     let mut updated_fields = Vec::new();
@@ -883,6 +921,10 @@ fn run_edit_issue_command(client: &Client, jira_base_url: &str, args: &EditArgs)
         updated_fields.push("assignee");
     }
 
+    if resolved_sprint.is_some() {
+        updated_fields.push("sprint");
+    }
+
     if args.json {
         let mut payload = json!({
             "ticket": ticket_id,
@@ -891,6 +933,12 @@ fn run_edit_issue_command(client: &Client, jira_base_url: &str, args: &EditArgs)
         });
 
         if let Some(obj) = payload.as_object_mut() {
+            if let Some(sprint) = resolved_sprint.as_ref() {
+                obj.insert("sprint".to_string(), json!(sprint.name));
+                obj.insert("sprint_id".to_string(), json!(sprint.id));
+                obj.insert("board".to_string(), json!(sprint.board_name));
+                obj.insert("board_id".to_string(), json!(sprint.board_id));
+            }
             if let Some(summary) = args.summary.as_ref() {
                 obj.insert("summary".to_string(), json!(summary));
             }
@@ -934,6 +982,10 @@ fn run_edit_issue_command(client: &Client, jira_base_url: &str, args: &EditArgs)
                     "Updated"
                 }
             );
+        }
+        if let Some(sprint) = resolved_sprint.as_ref() {
+            println!("Board:    {}", sprint.board_name);
+            println!("Sprint:   {}", sprint.name);
         }
         println!("URL:      {}", issue_url);
     }
@@ -1222,14 +1274,24 @@ fn resolve_target_sprint(
     base_url: &str,
     args: &CreateArgs,
 ) -> Result<Option<ResolvedSprint>> {
-    if !args.current_sprint {
+    resolve_current_sprint(client, base_url, &args.project, !args.backlog, args.board)
+}
+
+fn resolve_current_sprint(
+    client: &Client,
+    base_url: &str,
+    project: &str,
+    current_sprint: bool,
+    board: Option<u64>,
+) -> Result<Option<ResolvedSprint>> {
+    if !current_sprint {
         return Ok(None);
     }
 
-    let sprint = if let Some(board_id) = args.board {
+    let sprint = if let Some(board_id) = board {
         resolve_active_sprint_for_board(client, base_url, board_id)?
     } else {
-        resolve_latest_active_sprint_for_project(client, base_url, &args.project)?
+        resolve_latest_active_sprint_for_project(client, base_url, project)?
     };
 
     Ok(Some(sprint))
@@ -1268,7 +1330,7 @@ fn resolve_latest_active_sprint_for_project(
 
     best.ok_or_else(|| {
         anyhow!(
-            "No active sprint found on accessible Scrum boards for project {}. Create without --current-sprint or pass --board <id>.",
+            "No active sprint found on accessible Scrum boards for project {}. Start a sprint in Jira or pass --board <id> to select a different board.",
             project_key
         )
     })
@@ -1282,7 +1344,7 @@ fn resolve_active_sprint_for_board(
     let board = fetch_board(client, base_url, board_id)?;
     let sprint = fetch_active_sprints_for_board(client, base_url, board_id)?.ok_or_else(|| {
         anyhow!(
-            "No active sprint found on board {} ({}).",
+            "No active sprint found on board {} ({}). Start a sprint in Jira or pass --board <id> to select a different board.",
             board.id,
             board.name
         )
@@ -2763,6 +2825,7 @@ user_email = "user@example.com"
             issue_type: "Task".to_string(),
             assignee: "me".to_string(),
             current_sprint: false,
+            backlog: false,
             board: None,
             json: false,
         };
@@ -2805,6 +2868,8 @@ user_email = "user@example.com"
             description: Some("First line\nSecond line".to_string()),
             issue_type: Some("Bug".to_string()),
             assignee: Some("account-id-123".to_string()),
+            current_sprint: false,
+            board: None,
             json: false,
         };
 
@@ -2838,6 +2903,7 @@ user_email = "user@example.com"
             issue_type: "Task".to_string(),
             assignee: "unassigned".to_string(),
             current_sprint: false,
+            backlog: false,
             board: None,
             json: false,
         };
@@ -2856,6 +2922,8 @@ user_email = "user@example.com"
             description: Some(String::new()),
             issue_type: None,
             assignee: Some("unassigned".to_string()),
+            current_sprint: false,
+            board: None,
             json: false,
         };
 
@@ -2923,6 +2991,7 @@ user_email = "user@example.com"
             issue_type: "Task".to_string(),
             assignee: "account-id-123".to_string(),
             current_sprint: false,
+            backlog: false,
             board: None,
             json: false,
         };
@@ -2963,6 +3032,8 @@ user_email = "user@example.com"
             description: Some("Description text".to_string()),
             issue_type: Some("Story".to_string()),
             assignee: Some("account-id-123".to_string()),
+            current_sprint: false,
+            board: None,
             json: false,
         };
         let expected_payload = build_issue_update_payload(&args, Some("account-id-123"));
@@ -3076,6 +3147,7 @@ user_email = "user@example.com"
             issue_type: "Task".to_string(),
             assignee: "me".to_string(),
             current_sprint: true,
+            backlog: false,
             board: None,
             json: false,
         };
@@ -3096,7 +3168,7 @@ user_email = "user@example.com"
     }
 
     #[test]
-    fn resolve_target_sprint_returns_none_when_current_sprint_not_requested() {
+    fn resolve_target_sprint_returns_none_when_backlog_requested() {
         let client = create_jira_client("user@example.com", "token").expect("client");
         let args = CreateArgs {
             project: "RW".to_string(),
@@ -3105,6 +3177,7 @@ user_email = "user@example.com"
             issue_type: "Task".to_string(),
             assignee: "me".to_string(),
             current_sprint: false,
+            backlog: true,
             board: None,
             json: false,
         };
@@ -3132,6 +3205,7 @@ user_email = "user@example.com"
             issue_type: "Task".to_string(),
             assignee: "me".to_string(),
             current_sprint: true,
+            backlog: false,
             board: Some(42),
             json: false,
         };
