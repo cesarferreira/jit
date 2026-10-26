@@ -66,15 +66,15 @@ struct SkillArgs {
 
 #[derive(Subcommand, Debug)]
 enum SkillCommands {
-    /// Download the latest SKILL.md and install it for all known agents (Codex and Claude Code)
+    /// Install the bundled skill for agents with existing config folders, or selected agents
     Install(SkillInstallArgs),
 }
 
 #[derive(Args, Debug)]
 struct SkillInstallArgs {
-    /// Target a specific agent instead of installing for all known agents (codex | claude)
-    #[clap(long)]
-    agent: Option<String>,
+    /// Agents: codex, claude, pi, cursor, antigravity. Comma-separated or repeat --agent; defaults to detected config folders
+    #[clap(long, value_delimiter = ',')]
+    agent: Vec<String>,
 }
 
 #[derive(Args, Debug)]
@@ -777,67 +777,89 @@ fn run_auth_command(config_file: Option<&Path>) -> Result<()> {
     Ok(())
 }
 
-const SKILL_SOURCE_URL: &str =
-    "https://raw.githubusercontent.com/cesarferreira/jit/refs/heads/main/SKILL.md";
+const BUNDLED_SKILL: &str = include_str!("../SKILL.md");
 
 struct AgentTarget {
     name: &'static str,
-    home_subpath: &'static [&'static str],
+    config_subpaths: &'static [&'static [&'static str]],
 }
 
 const AGENT_TARGETS: &[AgentTarget] = &[
     AgentTarget {
         name: "codex",
-        home_subpath: &[".codex", "skills", "jit", "SKILL.md"],
+        config_subpaths: &[&[".codex"]],
     },
     AgentTarget {
         name: "claude",
-        home_subpath: &[".claude", "skills", "jit", "SKILL.md"],
+        config_subpaths: &[&[".claude"]],
+    },
+    AgentTarget {
+        name: "pi",
+        config_subpaths: &[&[".pi", "agent"]],
+    },
+    AgentTarget {
+        name: "cursor",
+        config_subpaths: &[&[".cursor"]],
+    },
+    AgentTarget {
+        name: "antigravity",
+        config_subpaths: &[&[".gemini", "config"], &[".gemini", "antigravity"]],
     },
 ];
+
+fn existing_agent_config(home: &Path, target: &AgentTarget) -> Option<PathBuf> {
+    target
+        .config_subpaths
+        .iter()
+        .map(|segments| home.join(segments.iter().collect::<PathBuf>()))
+        .find(|path| path.is_dir())
+}
 
 fn run_skill_install_command(args: &SkillInstallArgs) -> Result<()> {
     let home = dirs::home_dir().context("Could not determine home directory")?;
 
-    let targets: Vec<&AgentTarget> = match args.agent.as_deref() {
-        Some(agent) => {
-            let agent = agent.to_ascii_lowercase();
+    let mut targets = Vec::new();
+    if args.agent.is_empty() {
+        targets.extend(
+            AGENT_TARGETS
+                .iter()
+                .filter(|target| existing_agent_config(&home, target).is_some()),
+        );
+    } else {
+        for agent in &args.agent {
+            let agent = agent.trim().to_ascii_lowercase();
             let target = AGENT_TARGETS
                 .iter()
-                .find(|t| t.name == agent)
+                .find(|target| target.name == agent)
                 .ok_or_else(|| {
                     anyhow!(
                         "Unknown agent '{}'. Supported: {}",
                         agent,
                         AGENT_TARGETS
                             .iter()
-                            .map(|t| t.name)
+                            .map(|target| target.name)
                             .collect::<Vec<_>>()
                             .join(", ")
                     )
                 })?;
-            vec![target]
+            if !targets
+                .iter()
+                .any(|selected: &&AgentTarget| selected.name == target.name)
+            {
+                targets.push(target);
+            }
         }
-        None => AGENT_TARGETS.iter().collect(),
-    };
-
-    println!("Downloading SKILL.md from {}", SKILL_SOURCE_URL);
-    let client = ClientBuilder::new().build()?;
-    let response = client.get(SKILL_SOURCE_URL).send()?;
-    if !response.status().is_success() {
-        return Err(anyhow!(
-            "Failed to download SKILL.md ({}): {}",
-            response.status(),
-            SKILL_SOURCE_URL
-        ));
     }
-    let skill_contents = response.text()?;
 
+    if targets.is_empty() {
+        println!(
+            "No supported agent config folders found. Use --agent <name> to install explicitly."
+        );
+    }
     for target in targets {
-        let mut path = home.clone();
-        for segment in target.home_subpath {
-            path.push(segment);
-        }
+        let config = existing_agent_config(&home, target)
+            .unwrap_or_else(|| home.join(target.config_subpaths[0].iter().collect::<PathBuf>()));
+        let path = config.join("skills").join("jit").join("SKILL.md");
 
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).with_context(|| {
@@ -845,7 +867,7 @@ fn run_skill_install_command(args: &SkillInstallArgs) -> Result<()> {
             })?;
         }
 
-        fs::write(&path, &skill_contents)
+        fs::write(&path, BUNDLED_SKILL)
             .with_context(|| format!("Failed to write SKILL.md to {}", path.display()))?;
 
         println!("Installed {} skill at {}", target.name, path.display());
@@ -2811,7 +2833,7 @@ mod tests {
         match cli.command {
             Some(Commands::Skill(args)) => match args.command {
                 SkillCommands::Install(install_args) => {
-                    assert!(install_args.agent.is_none());
+                    assert!(install_args.agent.is_empty());
                 }
             },
             _ => panic!("expected skill install command"),
@@ -2826,7 +2848,7 @@ mod tests {
         match cli.command {
             Some(Commands::Skill(args)) => match args.command {
                 SkillCommands::Install(install_args) => {
-                    assert_eq!(install_args.agent.as_deref(), Some("codex"));
+                    assert_eq!(install_args.agent, ["codex"]);
                 }
             },
             _ => panic!("expected skill install command"),

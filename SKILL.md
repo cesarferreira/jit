@@ -9,6 +9,10 @@ description: Use when users ask to look up or search Jira issues, inspect detail
 
 Use this skill to execute `jit` for common Jira workflows: ticket lookup, detailed issue inspection, current sprint ticket listing, backlog ticket creation, current-sprint ticket creation, ticket/task editing, JQL search, transitions, comments, issue links, board/sprint discovery, and structured output for scripts.
 
+## Install or update this skill
+
+Run `jit skill install` to install the skill bundled with the installed CLI on the current machine for all supported agents with existing config directories: Codex, Claude Code, Pi, Cursor, and Antigravity App/IDE. It skips absent config folders and reports a no-op if none are found. Select specific targets with `--agent pi,cursor,antigravity` or repeated flags such as `--agent codex --agent claude`. Explicit `--agent` selections override detection and may create the selected config folders. Names are case insensitive and duplicate selections are installed once. It replaces the jit skill in the selected agents' global directories: `~/.codex/skills/jit/`, `~/.claude/skills/jit/`, `~/.pi/agent/skills/jit/`, `~/.cursor/skills/jit/`, and `~/.gemini/config/skills/jit/` respectively. Antigravity uses `~/.gemini/antigravity/skills/jit/` when only its legacy config directory exists. No network or Jira credentials are required. From a checkout, `cargo run -- skill install` installs that checkout's bundled skill. After upgrading `jit`, rerun `jit skill install` to keep the skill matched to the binary.
+
 ## Prerequisites
 
 1. Ensure the command is available:

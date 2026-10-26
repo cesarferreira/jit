@@ -134,23 +134,34 @@ jit edit RW-123 --summary "Refine edit flow"
 
 ## Agent Setup
 
-The repo ships a shared agent skill in [`SKILL.md`](SKILL.md). Install or update it for every supported coding agent in one command:
+The repo ships a shared agent skill in [`SKILL.md`](SKILL.md). Install or update it for every detected supported coding agent in one command:
 
 ```bash
 jit skill install
 ```
 
-This downloads the latest `SKILL.md` and writes it to:
+This detects existing agent config directories and installs the `SKILL.md` bundled with your installed `jit` binary into each matching agent. It creates missing skill subdirectories and replaces existing jit skills, without creating config folders for absent agents:
 
 - `~/.codex/skills/jit/SKILL.md` (Codex)
 - `~/.claude/skills/jit/SKILL.md` (Claude Code)
+- `~/.pi/agent/skills/jit/SKILL.md` (Pi)
+- `~/.cursor/skills/jit/SKILL.md` (Cursor)
+- `~/.gemini/config/skills/jit/SKILL.md` (Antigravity App/IDE)
 
-Target a specific agent with `--agent`:
+Detection checks `~/.codex`, `~/.claude`, `~/.pi/agent`, `~/.cursor`, and `~/.gemini/config`. Antigravity also supports an existing `~/.gemini/antigravity` directory; it uses the current config directory when both exist. No installed executables are probed. If no supported config directories exist, the command reports that nothing was found and leaves the filesystem unchanged.
+
+Installation needs no network connection or Jira credentials. To install skills from a local checkout, run `cargo run -- skill install`; to update the installed CLI and its skills together, run `cargo install --path .` followed by `jit skill install`.
+
+Select only the agents you want with `--agent` (comma-separated or repeated). Names are case insensitive; duplicate selections are installed once. Without `--agent`, it installs for all detected targets. Explicit selections can create the selected agents' config folders even if absent:
 
 ```bash
 jit skill install --agent codex
 jit skill install --agent claude
+jit skill install --agent pi,cursor,antigravity
+jit skill install --agent codex --agent claude
 ```
+
+The additional targets use the global skill locations documented by [Pi](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/skills.md), [Cursor](https://cursor.com/help/customization/skills), and [Antigravity](https://antigravity.google/docs/skills#antigravity-ide-skill-locations). The Antigravity target covers its App/IDE, whose global directory differs from the Antigravity CLI.
 
 ## Examples
 
@@ -538,7 +549,7 @@ jit --config-file /path/to/config.toml edit RW-123 --summary "Improve edit flow"
 | `jit create --backlog ...` | Create an issue without sprint assignment |
 | `jit create --current-sprint ...` | Create an issue and add it to the active sprint |
 | `jit edit ...` | Update summary, description, type, assignee, or current sprint |
-| `jit skill install` | Install or update the shared `SKILL.md` for Codex and Claude Code |
+| `jit skill install` | Install for all supported agents with existing config folders; `--agent` overrides detection |
 | `jit --config-file /path/to/config.toml ...` | Use a specific config file |
 
 ## Configuration
