@@ -227,6 +227,11 @@ jit --json --full ISSUE-123
 
 `--full` is the shortest path when you want description, comments, pull requests, and metadata together.
 
+JSON output also carries fields for editors and dashboards:
+
+- Every issue (`--json --my-tickets`, `--json ISSUE-123`): `url`, `issue_type`, `updated`, `comments_count`, `last_comment_at`, `last_comment_author`.
+- `--json --full ISSUE-123` adds `parent`, `subtasks`, `links` (each with `relation` such as `blocks` or `is blocked by`) and `branches` from Jira's GitHub development panel (best effort; empty when none are linked).
+
 Example output:
 
 ```text

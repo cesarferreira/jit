@@ -60,6 +60,7 @@ jit --show --include-prs ISSUE-123
 jit --show --full ISSUE-123
 jit --json --full ISSUE-123
 ```
+`--json --full` also returns `url`, `parent`, `subtasks`, `links` (with `relation`), `branches`, and comment activity (`comments_count`, `last_comment_at`, `last_comment_author`).
 6. Filter and limit comments:
 ```bash
 jit --show --include-comments --comments-limit 3 ISSUE-123

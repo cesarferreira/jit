@@ -224,7 +224,7 @@ struct JiraIssue {
     fields: JiraIssueFields,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 struct JiraIssueFields {
     summary: String,
     #[serde(default)]
@@ -251,6 +251,12 @@ struct JiraIssueFields {
     due_date: Option<String>,
     #[serde(default)]
     comment: Option<JiraCommentContainer>,
+    #[serde(default)]
+    issuelinks: Vec<Value>,
+    #[serde(default)]
+    subtasks: Vec<Value>,
+    #[serde(default)]
+    parent: Option<Value>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -286,6 +292,8 @@ struct JiraIssueType {
 struct JiraCommentContainer {
     #[serde(default)]
     comments: Vec<JiraComment>,
+    #[serde(default)]
+    total: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -310,6 +318,24 @@ struct JiraDevStatusResponse {
 struct JiraDevStatusDetail {
     #[serde(rename = "pullRequests", default)]
     pull_requests: Vec<JiraPullRequest>,
+    #[serde(default)]
+    branches: Vec<JiraBranch>,
+}
+
+#[derive(Debug, Deserialize, Default, Clone)]
+struct JiraBranch {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    repository: Option<JiraBranchRepository>,
+}
+
+#[derive(Debug, Deserialize, Default, Clone)]
+struct JiraBranchRepository {
+    #[serde(default)]
+    name: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
@@ -540,7 +566,10 @@ fn run_query_mode(client: &Client, config: &JiraConfig, args: QueryArgs) -> Resu
                         .and_then(|by_key| by_key.get(&issue.key))
                         .map(Vec::as_slice)
                         .unwrap_or(&[]);
-                    build_issue_json(issue, false, false, include_prs, prs, 0, false, None)
+                    let mut payload =
+                        build_issue_json(issue, false, false, include_prs, prs, 0, false, None);
+                    add_issue_extras(&mut payload, issue, jira_base_url, false, None);
+                    payload
                 })
                 .collect();
             println!("{}", json!({"issues":issues,"truncated":truncated}));
@@ -582,11 +611,17 @@ fn run_query_mode(client: &Client, config: &JiraConfig, args: QueryArgs) -> Resu
         } else {
             Vec::new()
         };
+        // Branches are best effort: an unlinked GitHub app must not fail the whole read.
+        let branches = if args.full && args.json {
+            fetch_issue_branches(client, jira_base_url, &issue.id).ok()
+        } else {
+            None
+        };
 
         // Output the result
         if args.json {
             if include_details || include_description || include_comments {
-                let payload = build_issue_json(
+                let mut payload = build_issue_json(
                     &issue,
                     include_description,
                     include_comments,
@@ -595,6 +630,13 @@ fn run_query_mode(client: &Client, config: &JiraConfig, args: QueryArgs) -> Resu
                     args.comments_limit,
                     args.all_comments,
                     args.since.as_deref(),
+                );
+                add_issue_extras(
+                    &mut payload,
+                    &issue,
+                    jira_base_url,
+                    include_details,
+                    branches.as_deref(),
                 );
                 println!("{}", payload);
             } else {
@@ -1284,6 +1326,10 @@ fn fetch_jira_issue(
         fields.push("comment");
     }
 
+    if include_details {
+        fields.extend(["issuelinks", "subtasks", "parent"]);
+    }
+
     fields.sort_unstable();
     fields.dedup();
 
@@ -1385,7 +1431,15 @@ fn fetch_my_tickets(
         client,
         base_url,
         "assignee = currentUser() AND sprint in openSprints() ORDER BY updated DESC",
-        &["summary", "status", "assignee", sprint_field],
+        &[
+            "summary",
+            "status",
+            "assignee",
+            "issuetype",
+            "updated",
+            "comment",
+            sprint_field,
+        ],
         limit,
     )?;
     if values.is_empty() {
@@ -1851,6 +1905,34 @@ fn fetch_issue_pull_requests(
         .detail
         .into_iter()
         .flat_map(|detail| detail.pull_requests.into_iter())
+        .collect())
+}
+
+fn fetch_issue_branches(
+    client: &Client,
+    base_url: &str,
+    issue_id: &str,
+) -> Result<Vec<JiraBranch>> {
+    let url = format!(
+        "{}/rest/dev-status/latest/issue/detail?issueId={}&applicationType=GitHub&dataType=branch",
+        base_url, issue_id
+    );
+
+    let response = client
+        .get(&url)
+        .send()
+        .context("Failed to send request to Jira dev-status API")?;
+
+    let response = api::checked_response(response).context("Jira dev-status request failed")?;
+
+    let dev_status: JiraDevStatusResponse = response
+        .json()
+        .context("Failed to parse Jira dev-status response")?;
+
+    Ok(dev_status
+        .detail
+        .into_iter()
+        .flat_map(|detail| detail.branches.into_iter())
         .collect())
 }
 
@@ -2514,6 +2596,95 @@ fn build_issue_json(
     }
 
     payload
+}
+
+/// Compact JSON for an issue referenced from another issue (parent, subtask, link target).
+fn related_issue_json(value: &Value) -> Value {
+    json!({
+        "ticket": value["key"],
+        "summary": value["fields"]["summary"],
+        "status": value["fields"]["status"]["name"],
+        "issue_type": value["fields"]["issuetype"]["name"]
+    })
+}
+
+/// Adds the fields editors and dashboards need on top of `build_issue_json`:
+/// the browse URL and comment activity always, and relationships plus
+/// development branches when `detailed`.
+fn add_issue_extras(
+    payload: &mut Value,
+    issue: &JiraIssue,
+    base_url: &str,
+    detailed: bool,
+    branches: Option<&[JiraBranch]>,
+) {
+    let Some(obj) = payload.as_object_mut() else {
+        return;
+    };
+    obj.insert(
+        "url".to_string(),
+        json!(format!("{}/browse/{}", base_url, issue.key)),
+    );
+
+    if let Some(container) = issue.fields.comment.as_ref() {
+        let last = container.comments.last();
+        obj.insert(
+            "comments_count".to_string(),
+            json!(container.total.unwrap_or(container.comments.len() as u64)),
+        );
+        obj.insert(
+            "last_comment_at".to_string(),
+            json!(last.and_then(|comment| comment.created.clone())),
+        );
+        obj.insert(
+            "last_comment_author".to_string(),
+            json!(last
+                .and_then(|comment| comment.author.as_ref())
+                .map(|author| author.display_name.clone())),
+        );
+    }
+
+    if detailed {
+        obj.insert(
+            "parent".to_string(),
+            issue
+                .fields
+                .parent
+                .as_ref()
+                .map_or(Value::Null, related_issue_json),
+        );
+        obj.insert(
+            "subtasks".to_string(),
+            Value::Array(issue.fields.subtasks.iter().map(related_issue_json).collect()),
+        );
+        let links = issue.fields.issuelinks.iter().filter_map(|link| {
+            let (target, relation) = match (link.get("outwardIssue"), link.get("inwardIssue")) {
+                (Some(target), _) => (target, &link["type"]["outward"]),
+                (None, Some(target)) => (target, &link["type"]["inward"]),
+                (None, None) => return None,
+            };
+            let mut item = related_issue_json(target);
+            item["relation"] = relation.clone();
+            item["link_type"] = link["type"]["name"].clone();
+            Some(item)
+        });
+        obj.insert("links".to_string(), Value::Array(links.collect()));
+    }
+
+    if let Some(branches) = branches {
+        let items: Vec<Value> = branches
+            .iter()
+            .map(|branch| {
+                json!({
+                    "name": branch.name,
+                    "url": branch.url,
+                    "repository": branch.repository.as_ref().and_then(|repo| repo.name.clone())
+                })
+            })
+            .collect();
+        obj.insert("branches_count".to_string(), json!(items.len()));
+        obj.insert("branches".to_string(), Value::Array(items));
+    }
 }
 
 /// Display detailed information about a JIRA ticket in a table format.
@@ -3526,7 +3697,7 @@ user_email = "user@example.com"
 
         assert_eq!(issue.key, "RW-123");
         assert!(request.starts_with("GET /rest/api/3/issue/RW-123?fields="));
-        assert!(request.contains("assignee,comment,created,customfield_10020,customfield_10396,description,duedate,issuetype,priority,reporter,status,summary,updated"));
+        assert!(request.contains("assignee,comment,created,customfield_10020,customfield_10396,description,duedate,issuelinks,issuetype,parent,priority,reporter,status,subtasks,summary,updated"));
     }
 
     #[test]
@@ -3764,7 +3935,9 @@ user_email = "user@example.com"
                         sample_comment("Ada", "2026-04-01T09:00:00.000+00:00", "Old"),
                         sample_comment("Grace", "2026-04-12T09:00:00.000+00:00", "Keep me"),
                     ],
+                    total: Some(7),
                 }),
+                ..Default::default()
             },
         };
         let pull_requests = vec![JiraPullRequest {
@@ -3794,6 +3967,68 @@ user_email = "user@example.com"
         assert_eq!(payload["comments"][0]["author"], "Grace");
         assert_eq!(payload["pull_requests_count"], 1);
         assert_eq!(payload["pull_requests"][0]["id"], "#42");
+    }
+
+    #[test]
+    fn add_issue_extras_reports_url_comment_activity_links_and_branches() {
+        let mut issue = sample_issue_with_comments(vec![
+            sample_comment("Ada", "2026-04-01T09:00:00.000+00:00", "First"),
+            sample_comment("Grace", "2026-04-12T09:00:00.000+00:00", "Last"),
+        ]);
+        issue.fields.comment.as_mut().unwrap().total = Some(2);
+        issue.fields.parent = Some(json!({
+            "key": "RW-1",
+            "fields": {"summary": "Epic", "status": {"name": "Open"}, "issuetype": {"name": "Epic"}}
+        }));
+        issue.fields.subtasks = vec![json!({
+            "key": "RW-124",
+            "fields": {"summary": "Child", "status": {"name": "Done"}, "issuetype": {"name": "Sub-task"}}
+        })];
+        issue.fields.issuelinks = vec![
+            json!({"type": {"name": "Blocks", "inward": "is blocked by", "outward": "blocks"},
+                   "outwardIssue": {"key": "RW-9", "fields": {"summary": "Later", "status": {"name": "To Do"}, "issuetype": {"name": "Task"}}}}),
+            json!({"type": {"name": "Blocks", "inward": "is blocked by", "outward": "blocks"},
+                   "inwardIssue": {"key": "RW-8", "fields": {"summary": "Earlier", "status": {"name": "Done"}, "issuetype": {"name": "Bug"}}}}),
+        ];
+        let branches = vec![JiraBranch {
+            name: Some("rw-123-backlog".to_string()),
+            url: Some("https://github.com/org/repo/tree/rw-123-backlog".to_string()),
+            repository: Some(JiraBranchRepository {
+                name: Some("org/repo".to_string()),
+            }),
+        }];
+
+        let mut payload = json!({"ticket": "RW-123"});
+        add_issue_extras(
+            &mut payload,
+            &issue,
+            "https://example.atlassian.net",
+            true,
+            Some(&branches),
+        );
+
+        assert_eq!(payload["url"], "https://example.atlassian.net/browse/RW-123");
+        assert_eq!(payload["comments_count"], 2);
+        assert_eq!(payload["last_comment_at"], "2026-04-12T09:00:00.000+00:00");
+        assert_eq!(payload["last_comment_author"], "Grace");
+        assert_eq!(payload["parent"]["ticket"], "RW-1");
+        assert_eq!(payload["subtasks"][0]["status"], "Done");
+        assert_eq!(payload["links"][0]["relation"], "blocks");
+        assert_eq!(payload["links"][0]["ticket"], "RW-9");
+        assert_eq!(payload["links"][1]["relation"], "is blocked by");
+        assert_eq!(payload["branches"][0]["name"], "rw-123-backlog");
+        assert_eq!(payload["branches_count"], 1);
+    }
+
+    #[test]
+    fn add_issue_extras_skips_relationships_unless_detailed() {
+        let issue = sample_issue_with_comments(vec![]);
+        let mut payload = json!({});
+        add_issue_extras(&mut payload, &issue, "https://x.test", false, None);
+        assert!(payload.get("links").is_none());
+        assert!(payload.get("branches").is_none());
+        assert_eq!(payload["comments_count"], 0);
+        assert_eq!(payload["last_comment_at"], Value::Null);
     }
 
     #[test]
@@ -3913,6 +4148,7 @@ user_email = "user@example.com"
                 updated: None,
                 due_date: None,
                 comment: None,
+                ..Default::default()
             },
         }
     }
@@ -3948,7 +4184,11 @@ user_email = "user@example.com"
                 created: None,
                 updated: None,
                 due_date: None,
-                comment: Some(JiraCommentContainer { comments }),
+                comment: Some(JiraCommentContainer {
+                    comments,
+                    total: None,
+                }),
+                ..Default::default()
             },
         }
     }
