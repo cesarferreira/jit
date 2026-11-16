@@ -98,6 +98,8 @@ jit create --project RW --backlog --summary "Save for later"
 jit create --project RW --current-sprint --summary "Deliver current sprint ticket creation"
 jit create --project RW --current-sprint --board 123 --summary "Use the board's active sprint"
 jit create --project RW --summary "Improve ticket creation flow" --json
+jit create --project RW --type Story --parent RW-1 --summary "Story under the epic"
+jit create --project RW --parent RW-123 --subtask --summary "Write migration"
 ```
 9. Edit an existing issue or task:
 ```bash
@@ -107,6 +109,7 @@ jit edit RW-123 --description ''
 jit edit RW-123 --type Bug --assignee unassigned
 jit edit RW-123 --type Task --summary "Refine task summary"
 jit edit RW-123 --assignee me
+jit edit RW-123 --parent RW-1
 jit edit RW-123 --current-sprint
 jit edit RW-123 --current-sprint --board 123
 jit edit https://your-company.atlassian.net/browse/RW-123 --current-sprint --json
@@ -164,8 +167,8 @@ printf '%s' 'Updated details' | jit edit RW-123 --description-file -
 2. Normalize input:
 - If the user provides a Jira URL, pass it directly to `jit`.
 - If the user provides a ticket key, pass the key directly.
-- For new tickets, gather `--project` and `--summary`; add `--type` and `--description` when provided. Default to the current sprint. Add `--backlog` only when the user explicitly requests the backlog.
-- If the user wants to edit an issue or task, gather the ticket key/URL and whichever of `--summary`, `--description`, `--type`, `--assignee`, and `--current-sprint` they want to change.
+- For new tickets, gather `--project` and `--summary`; add `--type` and `--description` when provided. Add `--parent KEY` to place the issue under a parent (for example an epic). For a sub-task, use `--parent KEY --subtask`; it resolves the project's sub-task type and skips sprint assignment because sub-tasks follow the parent's sprint. Default to the current sprint. Add `--backlog` only when the user explicitly requests the backlog.
+- If the user wants to edit an issue or task, gather the ticket key/URL and whichever of `--summary`, `--description`, `--type`, `--assignee`, `--parent`, and `--current-sprint` they want to change.
 - For creation, default `--assignee` to `me` unless the user asks for someone else or wants it left unassigned. For edits, pass `--assignee` only when requested.
 - Creation defaults to the current sprint; `--current-sprint` is optional. For existing issues, add `edit --current-sprint` only when a sprint move is requested. Optionally add `--board <id>` when the board is known.
 3. Select output mode:

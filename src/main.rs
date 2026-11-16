@@ -166,6 +166,14 @@ struct CreateArgs {
     #[clap(long = "type", default_value = "Task")]
     issue_type: String,
 
+    /// Parent issue key or URL (e.g., an epic for a story, or a story for a sub-task)
+    #[clap(long)]
+    parent: Option<String>,
+
+    /// Create a sub-task of --parent, using the project's sub-task issue type. Sub-tasks follow the parent's sprint
+    #[clap(long, requires = "parent", conflicts_with_all = ["issue_type", "current_sprint", "board"])]
+    subtask: bool,
+
     /// Assignee account ID, or `me` to assign to the current Jira user (default: me)
     #[clap(long, default_value = "me")]
     assignee: String,
@@ -211,6 +219,10 @@ struct EditArgs {
     /// Updated assignee account ID, or `me` / `unassigned`
     #[clap(long)]
     assignee: Option<String>,
+
+    /// Set the parent issue by key or URL (e.g., move a story under an epic)
+    #[clap(long)]
+    parent: Option<String>,
 
     /// Move the existing ticket into the current active sprint
     #[clap(long)]
@@ -1082,6 +1094,11 @@ fn run_create_issue_command(client: &Client, jira_base_url: &str, args: &CreateA
         args.description.as_deref(),
         args.description_file.as_deref(),
     )?;
+    resolved_args.parent = args.parent.as_deref().map(extract_ticket_id).transpose()?;
+    if args.subtask {
+        resolved_args.issue_type =
+            resolve_subtask_issue_type(client, jira_base_url, &args.project)?;
+    }
     let args = &resolved_args;
     let resolved_assignee = resolve_create_assignee(client, jira_base_url, &args.assignee)?;
     let resolved_sprint = resolve_target_sprint(client, jira_base_url, args).context(
@@ -1117,8 +1134,11 @@ fn run_create_issue_command(client: &Client, jira_base_url: &str, args: &CreateA
             "url": issue_url,
             "backlog": resolved_sprint.is_none(),
         });
-        if let Some(sprint) = resolved_sprint {
-            if let Some(obj) = payload.as_object_mut() {
+        if let Some(obj) = payload.as_object_mut() {
+            if let Some(parent) = args.parent.as_ref() {
+                obj.insert("parent".to_string(), json!(parent));
+            }
+            if let Some(sprint) = resolved_sprint {
                 obj.insert("sprint".to_string(), json!(sprint.name));
                 obj.insert("board".to_string(), json!(sprint.board_name));
             }
@@ -1128,12 +1148,17 @@ fn run_create_issue_command(client: &Client, jira_base_url: &str, args: &CreateA
         println!("Created:  {}", created_issue.key);
         println!("Project:  {}", args.project);
         println!("Type:     {}", args.issue_type);
+        if let Some(parent) = args.parent.as_ref() {
+            println!("Parent:   {}", parent);
+        }
         println!("Assignee: {}", resolved_assignee.label);
         println!("Summary:  {}", args.summary);
         if let Some(sprint) = resolved_sprint {
             println!("Board:    {}", sprint.board_name);
             println!("Sprint:   {}", sprint.name);
             println!("Backlog:  No (added to current sprint)");
+        } else if args.subtask {
+            println!("Sprint:   Same as parent");
         } else {
             println!("Backlog:  Yes (created without sprint assignment)");
         }
@@ -1149,14 +1174,16 @@ fn run_edit_issue_command(client: &Client, jira_base_url: &str, args: &EditArgs)
         args.description.as_deref(),
         args.description_file.as_deref(),
     )?;
+    resolved_args.parent = args.parent.as_deref().map(extract_ticket_id).transpose()?;
     let args = &resolved_args;
     let has_core_edits = args.summary.is_some()
         || args.description.is_some()
         || args.issue_type.is_some()
-        || args.assignee.is_some();
+        || args.assignee.is_some()
+        || args.parent.is_some();
     if !has_core_edits && !args.current_sprint {
         return Err(anyhow!(
-            "No editable fields provided. Pass at least one of --summary, --description, --type, --assignee, or --current-sprint."
+            "No editable fields provided. Pass at least one of --summary, --description, --type, --assignee, --parent, or --current-sprint."
         ));
     }
 
@@ -1215,6 +1242,9 @@ fn run_edit_issue_command(client: &Client, jira_base_url: &str, args: &EditArgs)
     if args.assignee.is_some() {
         updated_fields.push("assignee");
     }
+    if args.parent.is_some() {
+        updated_fields.push("parent");
+    }
 
     if resolved_sprint.is_some() {
         updated_fields.push("sprint");
@@ -1253,6 +1283,9 @@ fn run_edit_issue_command(client: &Client, jira_base_url: &str, args: &EditArgs)
             if let Some(assignee) = resolved_assignee.as_ref() {
                 obj.insert("assignee".to_string(), json!(assignee.label));
             }
+            if let Some(parent) = args.parent.as_ref() {
+                obj.insert("parent".to_string(), json!(parent));
+            }
         }
 
         println!("{}", payload);
@@ -1267,6 +1300,9 @@ fn run_edit_issue_command(client: &Client, jira_base_url: &str, args: &EditArgs)
         }
         if let Some(assignee) = resolved_assignee.as_ref() {
             println!("Assignee: {}", assignee.label);
+        }
+        if let Some(parent) = args.parent.as_ref() {
+            println!("Parent:   {}", parent);
         }
         if let Some(description) = args.description.as_ref() {
             println!(
@@ -1605,7 +1641,39 @@ fn resolve_target_sprint(
     base_url: &str,
     args: &CreateArgs,
 ) -> Result<Option<ResolvedSprint>> {
-    resolve_current_sprint(client, base_url, &args.project, !args.backlog, args.board)
+    // Jira sub-tasks always follow their parent's sprint and cannot be moved on their own.
+    let current_sprint = !args.backlog && !args.subtask;
+    resolve_current_sprint(client, base_url, &args.project, current_sprint, args.board)
+}
+
+fn resolve_subtask_issue_type(client: &Client, base_url: &str, project: &str) -> Result<String> {
+    let url = format!(
+        "{}/rest/api/3/issue/createmeta/{}/issuetypes",
+        base_url, project
+    );
+    let response = client
+        .get(&url)
+        .send()
+        .context("Failed to send request to JIRA API")?;
+    let body: Value = api::checked_response(response)?
+        .json()
+        .context("Failed to parse JIRA API response")?;
+    subtask_issue_type_name(&body).ok_or_else(|| {
+        anyhow!(
+            "Project {} has no sub-task issue type. Pass --type with a valid issue type instead of --subtask.",
+            project
+        )
+    })
+}
+
+fn subtask_issue_type_name(body: &Value) -> Option<String> {
+    body.get("issueTypes")
+        .or_else(|| body.get("values"))
+        .and_then(Value::as_array)?
+        .iter()
+        .find(|issue_type| issue_type["subtask"].as_bool() == Some(true))
+        .and_then(|issue_type| issue_type["name"].as_str())
+        .map(str::to_string)
 }
 
 fn resolve_current_sprint(
@@ -1869,6 +1937,10 @@ fn build_issue_create_payload(args: &CreateArgs, assignee_id: Option<&str>) -> V
         fields.insert("assignee".to_string(), json!({ "id": assignee_id }));
     }
 
+    if let Some(parent) = args.parent.as_deref() {
+        fields.insert("parent".to_string(), json!({ "key": parent }));
+    }
+
     if let Some(description) = args
         .description
         .as_deref()
@@ -1890,6 +1962,10 @@ fn build_issue_update_payload(args: &EditArgs, assignee_id: Option<&str>) -> Val
 
     if let Some(issue_type) = args.issue_type.as_deref() {
         fields.insert("issuetype".to_string(), json!({ "name": issue_type }));
+    }
+
+    if let Some(parent) = args.parent.as_deref() {
+        fields.insert("parent".to_string(), json!({ "key": parent }));
     }
 
     if args.assignee.is_some() {
@@ -3331,6 +3407,17 @@ user_email = "user@example.com"
     }
 
     #[test]
+    fn subtask_issue_type_name_picks_first_subtask_type() {
+        let body = json!({"issueTypes": [
+            {"name": "Task", "subtask": false},
+            {"name": "Subtask", "subtask": true}
+        ]});
+        assert_eq!(subtask_issue_type_name(&body).as_deref(), Some("Subtask"));
+        let no_subtasks = json!({"issueTypes": [{"name": "Task", "subtask": false}]});
+        assert_eq!(subtask_issue_type_name(&no_subtasks), None);
+    }
+
+    #[test]
     fn build_issue_create_payload_uses_adf_for_description() {
         let args = CreateArgs {
             project: "RW".to_string(),
@@ -3338,6 +3425,8 @@ user_email = "user@example.com"
             description: Some("First line\nSecond line\n\nNew paragraph".to_string()),
             description_file: None,
             issue_type: "Task".to_string(),
+            parent: None,
+            subtask: false,
             assignee: "me".to_string(),
             current_sprint: false,
             backlog: false,
@@ -3384,6 +3473,7 @@ user_email = "user@example.com"
             description_file: None,
             issue_type: Some("Bug".to_string()),
             assignee: Some("account-id-123".to_string()),
+            parent: None,
             current_sprint: false,
             board: None,
             json: false,
@@ -3418,6 +3508,8 @@ user_email = "user@example.com"
             description: Some("   ".to_string()),
             description_file: None,
             issue_type: "Task".to_string(),
+            parent: None,
+            subtask: false,
             assignee: "unassigned".to_string(),
             current_sprint: false,
             backlog: false,
@@ -3440,6 +3532,7 @@ user_email = "user@example.com"
             description_file: None,
             issue_type: None,
             assignee: Some("unassigned".to_string()),
+            parent: None,
             current_sprint: false,
             board: None,
             json: false,
@@ -3508,6 +3601,8 @@ user_email = "user@example.com"
             description: Some("Description text".to_string()),
             description_file: None,
             issue_type: "Task".to_string(),
+            parent: None,
+            subtask: false,
             assignee: "account-id-123".to_string(),
             current_sprint: false,
             backlog: false,
@@ -3552,6 +3647,7 @@ user_email = "user@example.com"
             description_file: None,
             issue_type: Some("Story".to_string()),
             assignee: Some("account-id-123".to_string()),
+            parent: None,
             current_sprint: false,
             board: None,
             json: false,
@@ -3666,6 +3762,8 @@ user_email = "user@example.com"
             description: None,
             description_file: None,
             issue_type: "Task".to_string(),
+            parent: None,
+            subtask: false,
             assignee: "me".to_string(),
             current_sprint: true,
             backlog: false,
@@ -3697,6 +3795,8 @@ user_email = "user@example.com"
             description: None,
             description_file: None,
             issue_type: "Task".to_string(),
+            parent: None,
+            subtask: false,
             assignee: "me".to_string(),
             current_sprint: false,
             backlog: true,
@@ -3726,6 +3826,8 @@ user_email = "user@example.com"
             description: None,
             description_file: None,
             issue_type: "Task".to_string(),
+            parent: None,
+            subtask: false,
             assignee: "me".to_string(),
             current_sprint: true,
             backlog: false,

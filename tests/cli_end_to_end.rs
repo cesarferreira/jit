@@ -499,6 +499,131 @@ fn create_backlog_conflicts_with_sprint_options() {
 }
 
 #[test]
+fn create_subtask_resolves_subtask_type_and_skips_sprint() {
+    let (server, requests) = spawn_sequence_server(vec![
+        (
+            "HTTP/1.1 200 OK",
+            r#"{"issueTypes":[{"id":"1","name":"Task","subtask":false},{"id":"5","name":"Sub-task","subtask":true}],"maxResults":50,"startAt":0,"total":2}"#,
+        ),
+        (
+            "HTTP/1.1 200 OK",
+            r#"{"accountId":"current-account","displayName":"Current user"}"#,
+        ),
+        ("HTTP/1.1 201 Created", r#"{"id":"10002","key":"RW-124"}"#),
+    ]);
+    let config = TempConfig::new(&server.base_url);
+    let output = run_jit([
+        "--config-file",
+        config.path_str(),
+        "create",
+        "--project",
+        "RW",
+        "--summary",
+        "Child work",
+        "--parent",
+        "https://company.atlassian.net/browse/RW-123",
+        "--subtask",
+        "--json",
+    ]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let payload: Value = serde_json::from_str(&stdout(&output)).unwrap();
+    assert_eq!(payload["ticket"], "RW-124");
+    assert_eq!(payload["parent"], "RW-123");
+    assert_eq!(payload["issue_type"], "Sub-task");
+    assert!(payload.get("sprint").is_none());
+
+    let captured = collect_requests(&requests, 3);
+    assert!(captured[0].starts_with("GET /rest/api/3/issue/createmeta/RW/issuetypes HTTP"));
+    assert!(captured[1].starts_with("GET /rest/api/3/myself HTTP"));
+    assert!(captured[2].starts_with("POST /rest/api/3/issue HTTP"));
+    let body: Value = serde_json::from_str(request_body(&captured[2])).unwrap();
+    assert_eq!(body["fields"]["parent"]["key"], "RW-123");
+    assert_eq!(body["fields"]["issuetype"]["name"], "Sub-task");
+    server.join();
+}
+
+#[test]
+fn create_with_parent_sets_parent_field() {
+    let (server, requests) = spawn_sequence_server(vec![(
+        "HTTP/1.1 201 Created",
+        r#"{"id":"10003","key":"RW-125"}"#,
+    )]);
+    let config = TempConfig::new(&server.base_url);
+    let output = run_jit([
+        "--config-file",
+        config.path_str(),
+        "create",
+        "--project",
+        "RW",
+        "--summary",
+        "Story under epic",
+        "--type",
+        "Story",
+        "--parent",
+        "RW-1",
+        "--assignee",
+        "unassigned",
+        "--backlog",
+    ]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(stdout(&output).contains("Parent:   RW-1"));
+    let captured = collect_requests(&requests, 1);
+    let body: Value = serde_json::from_str(request_body(&captured[0])).unwrap();
+    assert_eq!(body["fields"]["parent"]["key"], "RW-1");
+    assert_eq!(body["fields"]["issuetype"]["name"], "Story");
+    server.join();
+}
+
+#[test]
+fn create_subtask_requires_parent_and_rejects_sprint_options() {
+    for extra in [
+        vec![],
+        vec!["--parent", "RW-1", "--current-sprint"],
+        vec!["--parent", "RW-1", "--board", "42"],
+        vec!["--parent", "RW-1", "--type", "Task"],
+    ] {
+        let mut args = vec![
+            "create",
+            "--project",
+            "RW",
+            "--summary",
+            "Child work",
+            "--subtask",
+        ];
+        args.extend(extra.iter().copied());
+        let output = run_jit(args);
+        assert!(!output.status.success(), "args {extra:?} should fail");
+    }
+}
+
+#[test]
+fn edit_parent_sets_parent_field() {
+    let (server, requests) = spawn_sequence_server(vec![("HTTP/1.1 204 No Content", "")]);
+    let config = TempConfig::new(&server.base_url);
+    let output = run_jit([
+        "--config-file",
+        config.path_str(),
+        "edit",
+        "RW-123",
+        "--parent",
+        "https://company.atlassian.net/browse/RW-1",
+        "--json",
+    ]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let payload: Value = serde_json::from_str(&stdout(&output)).unwrap();
+    assert_eq!(payload["parent"], "RW-1");
+    assert_eq!(payload["updated_fields"], serde_json::json!(["parent"]));
+    let captured = collect_requests(&requests, 1);
+    assert!(captured[0].starts_with("PUT /rest/api/3/issue/RW-123 HTTP"));
+    let body: Value = serde_json::from_str(request_body(&captured[0])).unwrap();
+    assert_eq!(
+        body["fields"],
+        serde_json::json!({ "parent": { "key": "RW-1" } })
+    );
+    server.join();
+}
+
+#[test]
 fn edit_json_updates_requested_fields() {
     let (server, requests) = spawn_sequence_server(vec![("HTTP/1.1 204 No Content", "")]);
     let config = TempConfig::new(&server.base_url);

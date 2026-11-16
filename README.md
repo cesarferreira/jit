@@ -431,6 +431,22 @@ jit create --project RW --backlog --summary "Save for later"
 
 `--backlog` conflicts with `--current-sprint` and `--board`.
 
+### Set a parent or add sub-tasks
+
+Pass `--parent` with an issue key or URL to create an issue under a parent, such as a story under an epic:
+
+```bash
+jit create --project RW --type Story --parent RW-1 --summary "Story under the epic"
+```
+
+Pass `--subtask` with `--parent` to create a sub-task. `jit` looks up the project's sub-task issue type (for example `Sub-task` or `Subtask`), so you do not need to know its name:
+
+```bash
+jit create --project RW --parent RW-123 --subtask --summary "Write migration"
+```
+
+Sub-tasks follow the parent's sprint, so `--subtask` skips sprint assignment and conflicts with `--type`, `--current-sprint`, and `--board`.
+
 ### Select the current sprint
 
 Without `--backlog`, `jit` resolves the active sprint through Jira Software before creating the issue, then adds it to that sprint. It checks accessible Scrum boards for the project and uses the active sprint with the most recent `startDate`. Pass `--board` to select a specific board:
@@ -459,6 +475,12 @@ Clear the description:
 
 ```bash
 jit edit RW-123 --description ''
+```
+
+Set or change the parent issue:
+
+```bash
+jit edit RW-123 --parent RW-1
 ```
 
 Change issue type and assignee:
