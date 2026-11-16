@@ -970,3 +970,73 @@ fn parse_content_length(headers: &[u8]) -> usize {
         })
         .unwrap_or(0)
 }
+
+fn issue_with_attachment(content_url: &str) -> &'static str {
+    Box::leak(
+        format!(
+            r#"{{"id":"10001","key":"RW-123","fields":{{"summary":"Broken layout","attachment":[{{"id":"501","filename":"screen/shot.png","mimeType":"image/png","size":8,"created":"2026-04-10T09:00:00.000+00:00","author":{{"displayName":"Ada Lovelace"}},"content":"{content_url}"}}]}}}}"#
+        )
+        .into_boxed_str(),
+    )
+}
+
+#[test]
+fn include_attachments_json_lists_image_metadata_without_downloading() {
+    let (server, requests) = spawn_sequence_server(vec![(
+        "HTTP/1.1 200 OK",
+        issue_with_attachment("https://example.atlassian.net/rest/api/3/attachment/content/501"),
+    )]);
+    let config = TempConfig::new(&server.base_url);
+
+    let output = run_jit([
+        "--config-file",
+        config.path_str(),
+        "--json",
+        "--include-attachments",
+        "RW-123",
+    ]);
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let value: Value = serde_json::from_str(&stdout(&output)).unwrap();
+    assert_eq!(value["attachments_count"], 1);
+    assert_eq!(value["attachments"][0]["filename"], "screen/shot.png");
+    assert_eq!(value["attachments"][0]["is_image"], true);
+    assert!(value["attachments"][0].get("local_path").is_none());
+    let first = requests.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert!(first.contains("attachment"));
+    server.join();
+}
+
+#[test]
+fn download_attachments_saves_files_and_reports_local_paths() {
+    let (file_server, file_requests) = spawn_sequence_server(vec![("HTTP/1.1 200 OK", "PNGBYTES")]);
+    let content_url = format!("{}/secure/attachment/501/shot.png", file_server.base_url);
+    let (server, _requests) = spawn_sequence_server(vec![(
+        "HTTP/1.1 200 OK",
+        issue_with_attachment(&content_url),
+    )]);
+    let config = TempConfig::new(&server.base_url);
+    let dir = std::env::temp_dir().join(format!("jit-attachments-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let output = run_jit([
+        "--config-file",
+        config.path_str(),
+        "--json",
+        "--download-attachments",
+        dir.to_str().unwrap(),
+        "RW-123",
+    ]);
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let value: Value = serde_json::from_str(&stdout(&output)).unwrap();
+    let path = value["attachments"][0]["local_path"].as_str().unwrap();
+    // Path separators in the Jira filename must not escape the target directory.
+    assert_eq!(std::path::Path::new(path), dir.join("501-screen_shot.png"));
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "PNGBYTES");
+    let request = file_requests.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert!(request.starts_with("GET /secure/attachment/501/shot.png"));
+    let _ = std::fs::remove_dir_all(&dir);
+    file_server.join();
+    server.join();
+}

@@ -225,7 +225,16 @@ jit --show --full ISSUE-123
 jit --json --full ISSUE-123
 ```
 
-`--full` is the shortest path when you want description, comments, pull requests, and metadata together.
+`--full` is the shortest path when you want description, comments, pull requests, attachments, and metadata together.
+
+### Attachments and images
+
+```bash
+jit --show --include-attachments ISSUE-123          # list filename, type, size, URL
+jit --json --download-attachments ./shots ISSUE-123 # save files, report local_path
+```
+
+`--download-attachments DIR` saves each file as `DIR/<attachment-id>-<filename>` and, with `--json`, adds `local_path` to every entry in `attachments` (each also has `is_image`, `mime_type`, `size`, `url`). Coding agents can open those local paths to view screenshots attached to a ticket.
 
 JSON output also carries fields for editors and dashboards:
 
@@ -540,7 +549,8 @@ jit --config-file /path/to/config.toml edit RW-123 --summary "Improve edit flow"
 | `jit --text ISSUE-123` | Show one-line `KEY: Summary` output |
 | `jit --json ISSUE-123` | Return machine-readable JSON |
 | `jit --show ISSUE-123` | Show detailed ticket fields in a table |
-| `jit --show --full ISSUE-123` | Include description, comments, pull requests, and metadata |
+| `jit --show --full ISSUE-123` | Include description, comments, pull requests, attachments, and metadata |
+| `jit --json --download-attachments DIR ISSUE-123` | Download ticket attachments/images and return their local paths |
 | `jit --my-tickets` | List current sprint tickets assigned to you |
 | `jit search --jql '...'` | Search issues with pagination and a result limit |
 | `jit boards [--project KEY]` | List accessible boards |

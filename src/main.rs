@@ -111,7 +111,15 @@ struct QueryArgs {
     #[clap(long)]
     include_prs: bool,
 
-    /// Include description, comments, pull requests, and metadata in detailed output
+    /// Include attachment metadata (filename, type, size, URL), including images
+    #[clap(long)]
+    include_attachments: bool,
+
+    /// Download the ticket's attachments (images, files) into DIR and report their local paths
+    #[clap(long, value_name = "DIR")]
+    download_attachments: Option<PathBuf>,
+
+    /// Include description, comments, pull requests, attachments, and metadata in detailed output
     #[clap(long)]
     full: bool,
 
@@ -257,6 +265,24 @@ struct JiraIssueFields {
     subtasks: Vec<Value>,
     #[serde(default)]
     parent: Option<Value>,
+    #[serde(default)]
+    attachment: Vec<JiraAttachment>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct JiraAttachment {
+    id: String,
+    filename: String,
+    #[serde(rename = "mimeType", default)]
+    mime_type: Option<String>,
+    #[serde(default)]
+    size: Option<u64>,
+    #[serde(default)]
+    created: Option<String>,
+    #[serde(default)]
+    author: Option<JiraUser>,
+    #[serde(default)]
+    content: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -589,11 +615,14 @@ fn run_query_mode(client: &Client, config: &JiraConfig, args: QueryArgs) -> Resu
         let include_description = args.show || args.full || args.include_description;
         let include_comments = args.full || args.include_comments;
         let include_prs = args.full || args.include_prs;
+        let include_attachments =
+            args.full || args.include_attachments || args.download_attachments.is_some();
         let include_details = args.show
             || args.full
             || args.include_description
             || args.include_comments
-            || args.include_prs;
+            || args.include_prs
+            || include_attachments;
 
         // Fetch issue details based on requested output mode.
         let issue = fetch_jira_issue(
@@ -603,8 +632,14 @@ fn run_query_mode(client: &Client, config: &JiraConfig, args: QueryArgs) -> Resu
             include_details,
             include_description,
             include_comments,
+            include_attachments,
             (&config.sprint_field, &config.acceptance_criteria_field),
         )?;
+
+        let downloaded = match &args.download_attachments {
+            Some(dir) => download_attachments(client, &issue.fields.attachment, dir)?,
+            None => Vec::new(),
+        };
 
         let pull_requests = if include_prs {
             fetch_issue_pull_requests(client, jira_base_url, &issue.id)?
@@ -638,6 +673,9 @@ fn run_query_mode(client: &Client, config: &JiraConfig, args: QueryArgs) -> Resu
                     include_details,
                     branches.as_deref(),
                 );
+                if include_attachments {
+                    add_attachments_json(&mut payload, &issue.fields.attachment, &downloaded);
+                }
                 println!("{}", payload);
             } else {
                 println!(
@@ -655,6 +693,7 @@ fn run_query_mode(client: &Client, config: &JiraConfig, args: QueryArgs) -> Resu
             || args.include_description
             || args.include_comments
             || args.include_prs
+            || include_attachments
         {
             display_detailed_ticket(
                 &issue,
@@ -666,6 +705,9 @@ fn run_query_mode(client: &Client, config: &JiraConfig, args: QueryArgs) -> Resu
                 args.all_comments,
                 args.since.as_deref(),
             )?;
+            if include_attachments {
+                display_attachments(&issue.fields.attachment, &downloaded);
+            }
         } else {
             println!("Ticket:   {}", issue.key);
             println!("Summary:  {}", issue.fields.summary);
@@ -1298,6 +1340,7 @@ fn fetch_jira_issue(
     include_details: bool,
     include_description: bool,
     include_comments: bool,
+    include_attachments: bool,
     field_ids: (&str, &str),
 ) -> Result<JiraIssue> {
     let (sprint_field, acceptance_criteria_field) = field_ids;
@@ -1324,6 +1367,10 @@ fn fetch_jira_issue(
 
     if include_comments {
         fields.push("comment");
+    }
+
+    if include_attachments {
+        fields.push("attachment");
     }
 
     if include_details {
@@ -2598,6 +2645,109 @@ fn build_issue_json(
     payload
 }
 
+/// Local path for each downloaded attachment id.
+type Downloaded = Vec<(String, PathBuf)>;
+
+fn download_attachments(
+    client: &Client,
+    attachments: &[JiraAttachment],
+    dir: &Path,
+) -> Result<Downloaded> {
+    if attachments.is_empty() {
+        return Ok(Vec::new());
+    }
+    fs::create_dir_all(dir)
+        .with_context(|| format!("Failed to create attachment directory {}", dir.display()))?;
+    attachments
+        .iter()
+        .map(|attachment| {
+            let path = dir.join(attachment_file_name(attachment));
+            let response = client
+                .get(
+                    attachment
+                        .content
+                        .as_deref()
+                        .context("Attachment has no content URL")?,
+                )
+                .send()
+                .with_context(|| {
+                    format!("Failed to download attachment {}", attachment.filename)
+                })?;
+            let bytes = api::checked_response(response)?
+                .bytes()
+                .with_context(|| format!("Failed to read attachment {}", attachment.filename))?;
+            fs::write(&path, &bytes)
+                .with_context(|| format!("Failed to write {}", path.display()))?;
+            Ok((attachment.id.clone(), path))
+        })
+        .collect()
+}
+
+/// `<id>-<filename>` keeps duplicate names (e.g. several `image.png`) apart and strips path separators.
+fn attachment_file_name(attachment: &JiraAttachment) -> String {
+    let safe: String = attachment
+        .filename
+        .chars()
+        .map(|c| {
+            if matches!(c, '/' | '\\' | '\0') {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    format!("{}-{}", attachment.id, safe.trim_start_matches('.'))
+}
+
+fn add_attachments_json(
+    payload: &mut Value,
+    attachments: &[JiraAttachment],
+    downloaded: &Downloaded,
+) {
+    let items: Vec<Value> = attachments
+        .iter()
+        .map(|a| {
+            let mut item = json!({
+                "id": a.id,
+                "filename": a.filename,
+                "mime_type": a.mime_type,
+                "is_image": a.mime_type.as_deref().is_some_and(|m| m.starts_with("image/")),
+                "size": a.size,
+                "created": a.created,
+                "author": a.author.as_ref().map(|u| u.display_name.clone()),
+                "url": a.content,
+            });
+            if let Some((_, path)) = downloaded.iter().find(|(id, _)| *id == a.id) {
+                item["local_path"] = json!(path.display().to_string());
+            }
+            item
+        })
+        .collect();
+    if let Some(obj) = payload.as_object_mut() {
+        obj.insert("attachments_count".to_string(), json!(items.len()));
+        obj.insert("attachments".to_string(), Value::Array(items));
+    }
+}
+
+fn display_attachments(attachments: &[JiraAttachment], downloaded: &Downloaded) {
+    println!();
+    println!("{}", "ATTACHMENTS".bold());
+    println!();
+    if attachments.is_empty() {
+        println!("No attachments found.");
+        return;
+    }
+    for a in attachments {
+        let kind = a.mime_type.as_deref().unwrap_or("unknown type");
+        let size = a.size.map_or_else(String::new, |s| format!(" | {s} bytes"));
+        println!("{} ({kind}{size})", a.filename.bold());
+        match downloaded.iter().find(|(id, _)| *id == a.id) {
+            Some((_, path)) => println!("  saved: {}", path.display()),
+            None => println!("  url: {}", a.content.as_deref().unwrap_or("n/a")),
+        }
+    }
+}
+
 /// Compact JSON for an issue referenced from another issue (parent, subtask, link target).
 fn related_issue_json(value: &Value) -> Value {
     json!({
@@ -2638,9 +2788,10 @@ fn add_issue_extras(
         );
         obj.insert(
             "last_comment_author".to_string(),
-            json!(last
-                .and_then(|comment| comment.author.as_ref())
-                .map(|author| author.display_name.clone())),
+            json!(
+                last.and_then(|comment| comment.author.as_ref())
+                    .map(|author| author.display_name.clone())
+            ),
         );
     }
 
@@ -2655,7 +2806,14 @@ fn add_issue_extras(
         );
         obj.insert(
             "subtasks".to_string(),
-            Value::Array(issue.fields.subtasks.iter().map(related_issue_json).collect()),
+            Value::Array(
+                issue
+                    .fields
+                    .subtasks
+                    .iter()
+                    .map(related_issue_json)
+                    .collect(),
+            ),
         );
         let links = issue.fields.issuelinks.iter().filter_map(|link| {
             let (target, relation) = match (link.get("outwardIssue"), link.get("inwardIssue")) {
@@ -3125,6 +3283,8 @@ user_email = "user@example.com"
             include_description: false,
             include_comments: false,
             include_prs: false,
+            include_attachments: false,
+            download_attachments: None,
             full: false,
             comments_limit: 5,
             all_comments: false,
@@ -3150,6 +3310,8 @@ user_email = "user@example.com"
             include_description: false,
             include_comments: false,
             include_prs: false,
+            include_attachments: false,
+            download_attachments: None,
             full: false,
             comments_limit: 5,
             all_comments: false,
@@ -3687,6 +3849,7 @@ user_email = "user@example.com"
             true,
             true,
             true,
+            false,
             ("customfield_10020", "customfield_10396"),
         )
         .expect("issue fetch should succeed");
@@ -4007,7 +4170,10 @@ user_email = "user@example.com"
             Some(&branches),
         );
 
-        assert_eq!(payload["url"], "https://example.atlassian.net/browse/RW-123");
+        assert_eq!(
+            payload["url"],
+            "https://example.atlassian.net/browse/RW-123"
+        );
         assert_eq!(payload["comments_count"], 2);
         assert_eq!(payload["last_comment_at"], "2026-04-12T09:00:00.000+00:00");
         assert_eq!(payload["last_comment_author"], "Grace");

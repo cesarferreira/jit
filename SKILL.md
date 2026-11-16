@@ -69,6 +69,19 @@ jit --show --include-comments --since 2026-01-01 ISSUE-123
 ```
 If the embedded comment history is incomplete, `jit` fetches its remaining pages before applying date filters and limits.
 
+6a. Read attachments and images (screenshots, mockups, logs):
+```bash
+jit --json --download-attachments /tmp/ISSUE-123-files ISSUE-123
+jit --show --include-attachments ISSUE-123
+```
+- Jira descriptions and comments often reference screenshots or designs that text output cannot show. When a ticket mentions an image, mockup, screenshot, or attachment, or the description looks incomplete, fetch the attachments before implementing.
+- Use `--download-attachments DIR` with `--json`. Each entry in `attachments` has `filename`, `mime_type`, `is_image`, `size`, `author`, `created`, `url`, and `local_path`. Files are saved as `DIR/<attachment-id>-<filename>`.
+- To look at an image, open its `local_path` with your file-read or image tool. Check `is_image` first and skip files you cannot view.
+- Use a scratch directory such as `/tmp/ISSUE-123-files`, not the repository, so attachments are not committed.
+- `--include-attachments` (also part of `--full`) only lists metadata. The `url` needs Jira authentication, so do not fetch it with `curl` or a web tool; use `--download-attachments`.
+- Inline description images are ordinary attachments. They appear in the list but jit does not say where in the text each one sits.
+- Attachments may be sensitive. Do not paste their contents into external services or commit them.
+
 7. List current sprint tickets assigned to current user:
 ```bash
 jit
@@ -160,7 +173,9 @@ printf '%s' 'Updated details' | jit edit RW-123 --description-file -
 - `--text` for one-line output
 - `--json` for integrations
 - `--show` for expanded details
-- `--full` for metadata + description + comments + pull requests
+- `--full` for metadata + description + comments + pull requests + attachments
+- `--include-attachments` to list attachments (images, files) with metadata
+- `--download-attachments DIR` to save attachments locally; with `--json`, each gets a `local_path` you can open to view images
 - `--include-prs` to include linked GitHub pull requests
 - `--since YYYY-MM-DD` to filter comment history
 - `create` assigns new issues to the authenticated Jira user (`me`) in the current active sprint by default. `--backlog` explicitly skips sprint assignment and conflicts with `--current-sprint` and `--board`. Do not silently fall back to backlog when no active sprint is available.
